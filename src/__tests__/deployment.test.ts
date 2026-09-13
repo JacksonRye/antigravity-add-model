@@ -142,6 +142,28 @@ describe('standalone deployment with real ASAR fixtures', () => {
     },
   );
 
+  it.skipIf(process.platform === 'win32')(
+    'accepts an aliased parent path while rejecting unpacked links that escape it',
+    async () => {
+      const f = await fixture();
+      const aliasedApp = path.join(f.root, 'aliased-app');
+      fs.symlinkSync(path.dirname(f.resources), aliasedApp, 'dir');
+      const aliasedResources = path.join(aliasedApp, 'resources');
+      const link = path.join(f.resources, 'app.asar.unpacked/native/link');
+      fs.symlinkSync('helper.dat', link);
+      expect(fingerprint(aliasedResources)).toEqual(fingerprint(fs.realpathSync(f.resources)));
+
+      const archiveBefore = fs.readFileSync(path.join(f.resources, 'app.asar'));
+      put(path.join(f.resources, 'outside.dat'), 'outside the unpacked tree');
+      fs.unlinkSync(link);
+      fs.symlinkSync('../../outside.dat', link);
+      expect(() => fingerprint(aliasedResources)).toThrow('UNSAFE_PATH');
+      await expect(deploy({ ...f, resources: aliasedResources })).rejects.toThrow('UNSAFE_PATH');
+      expect(fs.readFileSync(path.join(f.resources, 'app.asar'))).toEqual(archiveBefore);
+      expect(fs.existsSync(path.join(f.resources, '.antigravity-model-patch'))).toBe(false);
+    },
+  );
+
   it('ignores a stale legacy backup and creates a fresh restore point for an app upgrade', async () => {
     const f = await fixture();
     fs.copyFileSync(path.join(f.resources, 'app.asar'), path.join(f.resources, 'app.asar.backup'));

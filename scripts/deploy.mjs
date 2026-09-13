@@ -113,6 +113,9 @@ function walk(root, relative = '') {
 }
 function hashDirectory(directory) {
   if (!exists(directory)) return null;
+  // macOS may expose /private/var through /var, and user-supplied parent paths
+  // may have aliases too. Compare resolved link targets to a resolved root.
+  const canonicalDirectory = fs.realpathSync(directory);
   const hash = createHash('sha256');
   for (const { name, stat } of walk(directory)) {
     const filename = path.join(directory, name);
@@ -122,7 +125,7 @@ function hashDirectory(directory) {
       if (path.isAbsolute(link)) fail('UNSAFE_PATH', `Unpacked absolute links cannot be relocated safely: ${filename}`);
       assertInside(directory, path.resolve(path.dirname(filename), link));
       try {
-        assertInside(directory, fs.realpathSync(filename));
+        assertInside(canonicalDirectory, fs.realpathSync(filename));
       } catch {
         fail('UNSAFE_PATH', `Unpacked link must resolve inside its own directory: ${filename}`);
       }
