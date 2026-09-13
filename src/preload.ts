@@ -20,10 +20,12 @@ interface UpdaterAPI {
   applyUpdate: () => Promise<void>;
   quitAndInstall: () => Promise<void>;
   checkForUpdates: () => Promise<void>;
+  getState: () => Promise<UpdaterState>;
 }
 
 interface DialogAPI {
   showOpenDialog: () => Promise<string | undefined>;
+  showOpenMultipleFolderDialog: () => Promise<string[] | undefined>;
 }
 
 interface NotificationOptions {
@@ -84,6 +86,11 @@ interface ElectronNativeAPI {
   zoomOut: () => void;
   resetZoom: () => void;
   openExternal: (url: string) => Promise<void>;
+  revealInFilePicker: (path: string) => Promise<void>;
+}
+
+interface IdeAPI {
+  isInstalled: () => Promise<boolean>;
 }
 
 interface CustomModelEntry {
@@ -129,10 +136,12 @@ const updaterAPI: UpdaterAPI = {
   applyUpdate: () => ipcRenderer.invoke('updater:apply'),
   quitAndInstall: () => ipcRenderer.invoke('updater:quit-and-install'),
   checkForUpdates: () => ipcRenderer.invoke('updater:check-for-updates'),
+  getState: () => ipcRenderer.invoke('updater:get-state'),
 };
 
 const dialogAPI: DialogAPI = {
   showOpenDialog: () => ipcRenderer.invoke('dialog:open-workspace'),
+  showOpenMultipleFolderDialog: () => ipcRenderer.invoke('dialog:open-workspaces'),
 };
 
 const notificationAPI: NotificationAPI = {
@@ -213,6 +222,11 @@ const electronNativeAPI: ElectronNativeAPI = {
     webFrame.setZoomLevel(0);
   },
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
+  revealInFilePicker: (path) => ipcRenderer.invoke('shell:reveal-in-file-picker', path),
+};
+
+const ideAPI: IdeAPI = {
+  isInstalled: () => ipcRenderer.invoke('ide:is-installed'),
 };
 
 // ─── Expose all APIs via contextBridge ──────────────────────────────────────
@@ -226,6 +240,7 @@ contextBridge.exposeInMainWorld('extensions', extensionsAPI);
 contextBridge.exposeInMainWorld('deepLink', deepLinkAPI);
 contextBridge.exposeInMainWorld('agent', agentAPI);
 contextBridge.exposeInMainWorld('electronNative', electronNativeAPI);
+contextBridge.exposeInMainWorld('ide', ideAPI);
 
 // ─── Renderer Augmentations (for TypeScript global type declarations) ──────
 
@@ -240,6 +255,7 @@ declare global {
     deepLink: DeepLinkAPI;
     agent: AgentAPI;
     electronNative: ElectronNativeAPI;
+    ide: IdeAPI;
   }
 }
 
@@ -1112,6 +1128,19 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // --- Network Interceptor for Model Injection --------------------------
 
+  function isSafeToIntercept(url: string): boolean {
+    // Never touch the internal Connect-RPC LanguageServerService channel —
+    // those responses are protocol-framed, not plain JSON, and rewriting
+    // them corrupts the renderer's RPC client / store hydration.
+    if (url.includes('exa.language_server_pb.')) return false;
+    if (url.includes('/LanguageServerService/')) return false;
+    return true;
+  }
+
+  function isJsonResponse(contentType: string | null): boolean {
+    return contentType?.split(';', 1)[0].trim().toLowerCase() === 'application/json';
+  }
+
   const customModelsCache: { models: any[]; ts: number } = { models: [], ts: 0 };
 
   async function getCustomModelsForInjection(): Promise<any[]> {
@@ -1134,22 +1163,30 @@ window.addEventListener('DOMContentLoaded', () => {
   ) {
     (this as any)._agy_url = typeof url === 'string' ? url : url.toString();
     (this as any)._agy_method = method;
-    return origXHROpen.call(this, method, url, async as boolean, username, password);
+    (this as any)._agy_async = async !== false;
+    return origXHROpen.call(this, method, url, async !== false, username, password);
   };
 
   const origXHRSend = XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
-    const xhr = this;
-    const url: string = (xhr as any)._agy_url || '';
+    const url: string = (this as any)._agy_url || '';
 
-    if (url.includes('GetAvailableModels') || url.includes('fetchAvailableModels')) {
-      const origOnReady = xhr.onreadystatechange;
-      xhr.onreadystatechange = async function (ev: Event) {
-        if (xhr.readyState === 4 && xhr.status === 200) {
-          const customModels = await getCustomModelsForInjection();
+    if ((url.includes('GetAvailableModels') || url.includes('fetchAvailableModels')) && isSafeToIntercept(url)) {
+      // Warm the cache without delaying native XHR events. If it is not ready by
+      // DONE, leave the response alone; load/readystatechange ordering must survive.
+      if ((this as any)._agy_async) void getCustomModelsForInjection();
+      const origOnReady = this.onreadystatechange;
+      this.onreadystatechange = (ev: Event) => {
+        if (
+          this.readyState === 4 &&
+          this.status === 200 &&
+          (this.responseType === '' || this.responseType === 'text') &&
+          isJsonResponse(this.getResponseHeader('content-type'))
+        ) {
+          const customModels = customModelsCache.models;
           if (customModels && customModels.length > 0) {
             try {
-              const responseText = xhr.responseText;
+              const responseText = this.responseText;
               if (responseText && responseText.length > 10) {
                 const parsed = JSON.parse(responseText) as Record<string, unknown>;
                 const modelsObj = (parsed.models || parsed.availableModels || parsed.available_models || {}) as Record<string, unknown>;
@@ -1171,25 +1208,28 @@ window.addEventListener('DOMContentLoaded', () => {
                   };
                 }
                 // Override response
-                Object.defineProperty(xhr, 'responseText', { value: JSON.stringify(parsed), writable: true });
-                Object.defineProperty(xhr, 'response', { value: JSON.stringify(parsed), writable: true });
+                Object.defineProperty(this, 'responseText', { value: JSON.stringify(parsed), writable: true });
+                Object.defineProperty(this, 'response', { value: JSON.stringify(parsed), writable: true });
               }
             } catch { /* ignore parse errors */ }
           }
         }
-        if (origOnReady) origOnReady.call(xhr, ev);
+        if (origOnReady) origOnReady.call(this, ev);
       };
     }
-    return origXHRSend.call(xhr, body);
+    return origXHRSend.call(this, body);
   };
 
   // Intercept fetch responses for model endpoints
   const origFetch = window.fetch;
   window.fetch = async function (input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-    const url = typeof input === 'string' ? input : (input as Request).url;
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const response = await origFetch.call(window, input, init);
 
-    if ((url.includes('GetAvailableModels') || url.includes('fetchAvailableModels')) && response.ok) {
+    if ((url.includes('GetAvailableModels') || url.includes('fetchAvailableModels')) && isSafeToIntercept(url) && response.ok) {
+      if (!isJsonResponse(response.headers.get('content-type'))) {
+        return response;
+      }
       const customModels = await getCustomModelsForInjection();
       if (customModels && customModels.length > 0) {
         try {

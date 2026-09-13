@@ -45,6 +45,7 @@ const fs = __importStar(require("fs/promises"));
 const path = __importStar(require("path"));
 const customScheme_1 = require("./customScheme");
 const tray_1 = require("./tray");
+const constants_1 = require("./ideInstall/constants");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const cryptoStore = require('./cryptoStore');
 /**
@@ -62,7 +63,15 @@ function registerIpcHandlers(storageManager) {
         }
         return result.filePaths[0];
     });
+    electron_1.ipcMain.handle('dialog:open-workspaces', async () => {
+        const result = await electron_1.dialog.showOpenDialog({
+            properties: ['openDirectory', 'createDirectory', 'multiSelections'],
+            title: 'Open workspaces',
+        });
+        return result.canceled || result.filePaths.length === 0 ? undefined : result.filePaths;
+    });
     // Auto-updater
+    electron_1.ipcMain.handle('updater:get-state', () => (0, updater_1.getUpdaterState)());
     electron_1.ipcMain.handle('updater:apply', async () => {
         (0, updater_1.broadcastState)({ type: 'ready' });
     });
@@ -286,8 +295,7 @@ function registerIpcHandlers(storageManager) {
                     }
                 }
                 const req = client.request(options, (res) => {
-                    // Any response (even 401/403) means the endpoint is reachable
-                    if (res.statusCode >= 200 && res.statusCode < 500) {
+                    if (res.statusCode >= 200 && res.statusCode < 400) {
                         resolve({
                             success: true,
                             status: res.statusCode,
@@ -295,10 +303,17 @@ function registerIpcHandlers(storageManager) {
                         });
                     }
                     else {
+                        const guidance = {
+                            401: 'Authentication rejected (HTTP 401) — check your API key and provider configuration',
+                            403: 'Access denied (HTTP 403) — check provider permissions, account eligibility, and location availability',
+                            404: 'Endpoint not found (HTTP 404) — check the API URL and provider model/route availability',
+                            405: 'Endpoint does not support HEAD (HTTP 405) — this connection test cannot verify model access',
+                            429: 'Rate limited (HTTP 429) — check provider quota and retry later',
+                        };
                         resolve({
                             success: false,
                             status: res.statusCode,
-                            error: `Server returned HTTP ${res.statusCode}`,
+                            error: guidance[res.statusCode] || `Server returned HTTP ${res.statusCode}`,
                         });
                     }
                     res.resume(); // consume response to free memory
@@ -402,6 +417,23 @@ function registerIpcHandlers(storageManager) {
     electron_1.ipcMain.handle('shell:open-external', async (_event, url) => {
         if (url.startsWith('https://') || url.startsWith('http://')) {
             await electron_1.shell.openExternal(url);
+        }
+    });
+    electron_1.ipcMain.handle('shell:reveal-in-file-picker', async (_event, filePath) => {
+        if (typeof filePath !== 'string' || !filePath.trim() || filePath.includes('\0') || !path.isAbsolute(filePath)) {
+            throw new Error('Expected an absolute filesystem path');
+        }
+        // Do not send URLs or nonexistent paths to a platform shell.
+        await fs.stat(filePath);
+        electron_1.shell.showItemInFolder(filePath);
+    });
+    electron_1.ipcMain.handle('ide:is-installed', async () => {
+        try {
+            const installation = await fs.stat((0, constants_1.getIdeInstallPath)());
+            return installation.isDirectory();
+        }
+        catch {
+            return false;
         }
     });
 }

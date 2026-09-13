@@ -49,6 +49,8 @@ interface GeminiRequestBody {
 
 let server: http.Server | null = null;
 let proxyPort = 0;
+let startingProxy: Promise<number> | null = null;
+let stoppingProxy: Promise<void> | null = null;
 
 // Shared cross-turn state
 import {
@@ -67,6 +69,7 @@ import { detectModelCapabilities, detectModelCapabilitiesByName } from './proxy/
 
 // Provider translator registry (auto-discovers translators from proxy/translators/)
 import * as registry from './proxy/registry';
+import { getRequiredProxyPort, listenProxy } from './proxy/listen';
 
 // Dynamic imports (stays require for Electron-specific modules)
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -1433,53 +1436,57 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
 // ─── Server Start/Stop ────────────────────────────────────────────────────
 
-export function startProxy(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    server = http.createServer(handleRequest);
+export async function startProxy(): Promise<number> {
+  if (stoppingProxy) await stoppingProxy;
+  if (server?.listening && proxyPort) return proxyPort;
+  if (startingProxy) return startingProxy;
 
-    // P1-9: Start managed cleanup interval
-    startCleanupInterval();
-
-    let primaryPort = 50999;
-
-    function tryListen(port: number): void {
-      server!.listen(port, '127.0.0.1', () => {
-        proxyPort = (server!.address() as import('net').AddressInfo).port;
-        log.info(`[Proxy] Server listening on http://127.0.0.1:${proxyPort}`);
-        resolve(proxyPort);
-      });
-    }
-
-    server.on('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE' && primaryPort === 50999) {
-        log.warn('[Proxy] Port 50999 is already in use. Retrying on dynamic port...');
-        primaryPort = 0;
-        tryListen(0);
-      } else {
-        log.error('[Proxy] Startup failed:', err);
-        reject(err);
-      }
+  const requiredPort = getRequiredProxyPort(app.getAppPath());
+  const newServer = http.createServer(handleRequest);
+  server = newServer;
+  startCleanupInterval();
+  startingProxy = listenProxy(newServer, requiredPort ?? 50999, requiredPort === undefined)
+    .then((port) => {
+      proxyPort = port;
+      log.info(`[Proxy] Server listening on http://127.0.0.1:${proxyPort}`);
+      return proxyPort;
+    })
+    .catch((error) => {
+      stopCleanupInterval();
+      server = null;
+      proxyPort = 0;
+      log.error('[Proxy] Startup failed:', error);
+      throw error;
+    })
+    .finally(() => {
+      startingProxy = null;
     });
-
-    tryListen(primaryPort);
-  });
+  return startingProxy;
 }
 
 export function stopProxy(): Promise<void> {
-  return new Promise((resolve) => {
-    // P1-9: Stop cleanup interval to prevent orphaned timers
-    stopCleanupInterval();
-
-    if (server) {
-      server.close(() => {
-        log.info('[Proxy] Server stopped');
-        server = null;
-        resolve();
-      });
-    } else {
-      resolve();
+  if (stoppingProxy) return stoppingProxy;
+  stoppingProxy = (async () => {
+    // A shutdown requested during startup must also close the listener once ready.
+    if (startingProxy) {
+      try {
+        await startingProxy;
+      } catch {
+        // A failed start already cleared its server and cleanup interval.
+      }
     }
+    stopCleanupInterval();
+    if (server) {
+      const closingServer = server;
+      await new Promise<void>((resolve) => closingServer.close(() => resolve()));
+      log.info('[Proxy] Server stopped');
+    }
+    server = null;
+    proxyPort = 0;
+  })().finally(() => {
+    stoppingProxy = null;
   });
+  return stoppingProxy;
 }
 
 export function getProxyPort(): number {

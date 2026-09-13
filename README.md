@@ -2,12 +2,14 @@
 
 This repository contains a patch for **Google Antigravity** that enables external AI models (OpenAI, Anthropic, Together API, Ollama, Google AI Studio, and any OpenAI-compatible provider) alongside the built-in Gemini models. It injects a local HTTP proxy into the Electron app, reverse-engineers the Cloud Code internal API (`v1internal`), translates request/response formats between providers, and provides an inline "Add Model" UI in the Settings page.
 
+> **Compatibility:** This patch targets the standalone Electron desktop agent. The separate VS Code-based Antigravity IDE (including macOS 2.1.1) is not supported; the installer now detects it before changing files. See [compatibility and recovery](docs/compatibility.md).
+
 ## How It Works
 
 ### Architecture
 
 ```
-Antigravity IDE
+Antigravity standalone desktop agent
   └── Language Server (Go binary)
         └── --api_server_url → http://127.0.0.1:50999 (local proxy)
                                   ├── Google models → daily-cloudcode-pa.googleapis.com
@@ -50,10 +52,10 @@ Antigravity IDE
 #### Deployment Scripts
 | File | Platform |
 |---|---|
-| [deploy.ps1](deploy.ps1) | Windows — stops Antigravity, packs `dist/` into `app.asar`, restarts |
-| [deploy.sh](deploy.sh) | macOS — extracts `app.asar` from `/Applications/`, replaces `dist/`, repacks and relaunches |
+| [deploy.ps1](deploy.ps1) | Windows — preflight, transactional ASAR deployment and restore |
+| [deploy.sh](deploy.sh) | macOS — standalone ASAR deployment; rejects the separate IDE layout |
 | [deploy_linux.sh](deploy_linux.sh) | Linux — auto-detects installation path across standard Electron app directories |
-| [repack.ps1](repack.ps1) | Repacks existing `app.asar` with updated `dist/` files |
+| [repack.ps1](repack.ps1) | Compatibility wrapper for the same transactional installer |
 
 > [!NOTE]
 > The codebase was migrated from JavaScript (`dist/`) to **TypeScript** (`src/`) in v2.0.3. All source code lives under `src/` and compiles to `dist/` via `npx tsc`. The compiled `dist/` files are what get packed into `app.asar`.
@@ -142,7 +144,7 @@ server.on('error', (e) => {
 });
 ```
 
-If the default port `50999` is already in use (e.g., by another instance or stale process), the proxy automatically falls back to a random available port (`port: 0`). The `languageServer.ts` module reads the dynamically assigned port and injects it into the Go language server's `--api_server_url` argument at startup, ensuring the chain always stays connected.
+For an unpatched language-server binary, an occupied port `50999` triggers fallback to an available port. `languageServer.ts` waits for the listener and passes its actual port through `--api_server_url`. The optional Windows binary patch requires port `50999`; its archive marker disables fallback, and a port conflict stops startup with an actionable error.
 
 ### Parallel Request Isolation
 
@@ -282,167 +284,55 @@ You can configure **multiple models from different providers simultaneously**. A
 
 ## Installation
 
-### One-Click Re-Deploy (After Antigravity Updates)
+Requires Node.js **22.12.0 or newer**. Build the tracked TypeScript source before deploying:
 
-When Google releases a new Antigravity version, the update replaces the Language Server binary and custom models stop working. Simply run:
-
-```
-repatch.bat
-```
-
-Or double-click `repatch.bat` in the project folder. This rebuilds, redeploys the patch, and restarts Antigravity in one step.
-
-> [!IMPORTANT]
-> Run `repatch.bat` after **every** Antigravity auto-update to restore custom model support.
-
-### Automatic (Windows)
-
-```powershell
-.\deploy.ps1
-```
-
-This stops Antigravity, packs the project's `dist/` into `app.asar`, deploys to `%LOCALAPPDATA%\Programs\antigravity\resources\`, and restarts the app.
-
-> [!TIP]
-> The deploy script uses `$PSScriptRoot` (script's own directory). You can run it from anywhere; it always finds the project.
-
-### Automatic (macOS)
-
-```bash
-bash deploy.sh
-```
-
-This kills any running Antigravity process, extracts the current `app.asar` from `/Applications/Antigravity.app/Contents/Resources/`, replaces its `dist/` with the latest build, re-packages, and relaunches the app.
-
-> [!TIP]
-> Make the script executable first: `chmod +x deploy.sh`. Like the Windows version, it auto-detects the project directory via `$SCRIPT_DIR`.
-
-### Automatic (Linux)
-
-```bash
-bash deploy_linux.sh
-```
-
-Stops any running Antigravity process, auto-detects the `app.asar` location (common search paths: `~/.local/share/Programs/`, `/opt/`, `/usr/lib/`), replaces its `dist/` with the latest build, re-packages, and relaunches the app.
-
-> [!TIP]
-> Make the script executable first: `chmod +x deploy_linux.sh`. It automatically searches for the Antigravity installation across multiple standard Linux Electron app paths.
-
-### Build from Source (TypeScript)
-
-```bash
-npm install
-npx tsc
-```
-
-### Manual (All Platforms)
-
-```bash
-npx -y @electron/asar pack . "<antigravity_resources_dir>/app.asar"
-```
-
-- **Windows**: `C:\Users\<User>\AppData\Local\Programs\antigravity\resources\`
-- **macOS**: `/Applications/Antigravity.app/Contents/Resources/`
-
----
-
-## Antigravity Update Recovery
-
-### The Problem
-
-Starting with **Antigravity v2.0.6**, Google hardcoded the `fetchAvailableModels` API URL to `https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels` inside the Language Server binary. This call **bypasses the local proxy entirely**, meaning:
-
-- Custom models remain in `custom_models.json` and appear in **Settings → Custom Models**
-- But they **do NOT appear** in the chat model dropdown
-- The chat dropdown only shows Google's built-in Gemini models
-
-### The Fix: Binary Patch
-
-The `deploy.ps1` / `deploy.sh` / `deploy_linux.sh` scripts **automatically apply a binary patch** to the Language Server executable. The hardcoded URL:
-
-```
-https://daily-cloudcode-pa.googleapis.com
-```
-
-is replaced with:
-
-```
-http://localhost:50999/v1internal/xxxxxxx
-```
-
-This forces the Language Server to route **all** `fetchAvailableModels` calls through the local proxy, where custom models are injected before the response reaches the Antigravity frontend.
-
-### After EVERY Antigravity Update
-
-When Google releases a new Antigravity version (e.g., v2.0.7, v2.1.0):
-
-1. **Antigravity auto-updates** → The Language Server binary is replaced with an unpatched version
-2. **Custom models disappear** from the chat dropdown again
-3. **Re-run the deploy script** to re-apply the binary patch:
-
-```powershell
-# Windows (PowerShell)
+```sh
+npm ci --ignore-scripts
 npm run build
-powershell -ExecutionPolicy Bypass -File ".\deploy.ps1"
+node scripts/deploy.mjs --check
 ```
 
-```bash
-# macOS / Linux
-npm run build
-bash deploy.sh        # macOS
-bash deploy_linux.sh  # Linux
+Quit the standalone Antigravity app and its language server, then run the wrapper for your platform:
+
+| Platform | Command |
+| --- | --- |
+| Windows, with the recognized language-server endpoint | `.\deploy.ps1 --patch-language-server` |
+| macOS standalone app | `bash deploy.sh` |
+| Linux | `bash deploy_linux.sh` |
+
+All wrappers accept `--resources PATH`, `--check`, and `--restore`. A Resources directory,
+installation root, or macOS `.app` can be supplied explicitly. For example:
+
+```sh
+bash deploy.sh --check --resources "/Applications/Antigravity.app"
+bash deploy.sh --resources "/Applications/Antigravity.app"
 ```
 
-> [!IMPORTANT]
-> **You must redeploy after every Antigravity update.** The update replaces `language_server.exe` with a clean version, removing the binary patch. Running `deploy.ps1` re-applies the patch automatically.
+The installer reads the **currently installed archive**, preserves unrelated files, backs up
+that version, and validates a new archive before replacing it. Failures roll back the files.
+It never restores a stale `app.asar.backup` automatically. Reopen Antigravity manually after
+success; the scripts no longer force-kill or relaunch applications.
 
-### How to Check if the Patch is Active
+`repatch.bat --patch-language-server` rebuilds and deploys on Windows, stopping on any error. `repack.ps1` uses the
+same installer; packing this repository wholesale over the vendor application is not supported.
 
-Check the Language Server log after startup:
+### Updates and recovery
 
-```
-# Windows
-%APPDATA%\Antigravity\logs\language_server.log
-```
+After an Antigravity update, rebuild and run `--check` again before deployment. To undo a
+deployment, close the app and use:
 
-If the patch is active, you'll see:
-```
-URL: http://localhost:50999/v1internal/xxxxxxx/v1internal:fetchAvailableModels
-```
-
-If the patch is NOT active (after an update), you'll see:
-```
-URL: https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels
+```sh
+node scripts/deploy.mjs --restore --resources "/path/to/Resources"
 ```
 
-### Technical Details
+Restore uses this installer's version-specific backup and refuses if upstream application
+files changed afterwards. Automatic updates remain enabled.
 
-The binary patch works by:
-
-1. **Finding** the string `https://daily-cloudcode-pa.googleapis.com` (41 bytes) in the LS binary
-2. **Replacing** it with `http://localhost:50999/v1internal/xxxxxxx` (exactly 41 bytes)
-3. **URL cleanup**: The proxy strips the `/v1internal/xxxxxxx` padding from incoming requests before forwarding to Google
-
-The patch also affects other hardcoded Cloud Code calls (`listExperiments`, `streamGenerateContent`, `loadCodeAssist`), routing them all through the proxy for consistent behavior.
-
-### Manual Binary Patch (if deploy script fails)
-
-```powershell
-# Find the offset of the hardcoded URL
-$offset = (Select-String -Path "language_server.exe" -Pattern "daily-cloudcode-pa.googleapis.com" -Encoding byte).Matches[0].Index - 8
-
-# Apply the patch
-$newUrl = [System.Text.Encoding]::ASCII.GetBytes("http://localhost:50999/v1internal/xxxxxxx")
-$fs = [System.IO.File]::OpenWrite("language_server.exe")
-$fs.Seek($offset, [System.IO.SeekOrigin]::Begin)
-$fs.Write($newUrl, 0, $newUrl.Length)
-$fs.Close()
-```
-
-> [!NOTE]
-> The script above finds the `https://` prefix (8 bytes before the hostname) and replaces the full 41-byte URL. The `xxxxxxx` padding ensures the replacement stays exactly the same length as the original string.
->
-> A backup of the original binary is automatically created at `language_server.exe.bak` before patching.
+For recognized standalone Windows language-server binaries that bypass API-server flags,
+the fixed-length endpoint patch is explicitly available with `--patch-language-server`.
+It requires port 50999 and participates in backup/rollback. It is not an IDE or macOS binary
+patch. See [the full compatibility and recovery guide](docs/compatibility.md) for limitations,
+the black-screen fix, provider 403/404 diagnostics, and validation coverage.
 
 ---
 
@@ -664,6 +554,11 @@ Set `DEBUG=antigravity:*` for verbose logging (debug level captures stream parse
 ---
 
 ## Changelog
+
+### v2.1.1
+- **Critical Fix**: Fixed a startup crash (`a.getState is not a function`) when launching with Antigravity v2.12.2.
+- **Architecture**: Removed a hardcoded 500ms page reload during startup that interrupted the Antigravity frontend's state hydration.
+- **Compatibility**: Injected missing ContextBridge APIs (`getState`, `showOpenMultipleFolderDialog`, `revealInFilePicker`, `ideAPI`) into `preload.ts` that were introduced in Antigravity v2.12 and are required by the newer frontend renderer.
 
 ### v2.1.0
 - **TypeScript**: Full migration — all 23 source files converted from JavaScript to TypeScript (`dist/*.js` → `src/*.ts`)

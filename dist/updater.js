@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.updateActions = exports.MenuUpdateStep = void 0;
+exports.getUpdaterState = getUpdaterState;
 exports.broadcastState = broadcastState;
 exports.initAutoUpdater = initAutoUpdater;
 exports.checkForUpdates = checkForUpdates;
@@ -61,10 +62,22 @@ let isManualCheck = false;
 const INITIAL_CHECK_DELAY_MS = 10000; // 10 seconds
 // How often to re-check for updates after the initial check (ms)
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+let currentState = { type: 'idle' };
+/** Return the last state, including changes emitted before a renderer subscribed. */
+function getUpdaterState() {
+    return {
+        ...currentState,
+        ...(currentState.update ? { update: { ...currentState.update } } : {}),
+    };
+}
 /** Broadcast a state change to every open BrowserWindow. */
 function broadcastState(state) {
+    currentState = {
+        ...state,
+        ...(state.update ? { update: { ...state.update } } : {}),
+    };
     for (const win of electron_1.BrowserWindow.getAllWindows()) {
-        win.webContents.send('updater:state-changed', state);
+        win.webContents.send('updater:state-changed', getUpdaterState());
     }
 }
 /**

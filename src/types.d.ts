@@ -154,6 +154,7 @@ declare module 'electron' {
 
   export const shell: {
     openExternal(url: string, options?: Record<string, unknown>): Promise<void>;
+    showItemInFolder(fullPath: string): void;
   };
 
   export const contextBridge: {

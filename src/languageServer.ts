@@ -181,14 +181,17 @@ export function startLanguageServer(port: number, csrf: string, headless?: boole
   return new Promise(async (resolve, reject) => {
     const logStream = fs.createWriteStream(getLsLogPath(), { flags: 'w' });
 
-    let proxyPort: number | undefined;
+    let proxyPort: number;
     try {
       proxyPort = await startProxy();
     } catch (err) {
       console.error('[LanguageServer] Failed to start local proxy:', err);
+      logStream.end();
+      reject(err);
+      return;
     }
 
-    const apiServerUrl = proxyPort ? `http://localhost:${proxyPort}` : 'https://generativelanguage.googleapis.com';
+    const apiServerUrl = `http://localhost:${proxyPort}`;
 
     // We need to pass the override flags because the LS is running in standalone mode
     const args: string[] = [
