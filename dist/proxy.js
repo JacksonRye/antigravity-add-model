@@ -53,12 +53,15 @@ const electron_log_1 = __importDefault(require("electron-log"));
 // ─── Imports ──────────────────────────────────────────────────────────────
 let server = null;
 let proxyPort = 0;
+let startingProxy = null;
+let stoppingProxy = null;
 // Shared cross-turn state
 const shared_1 = require("./proxy/shared");
 // Model configuration & capability detection
 const modelUtils_1 = require("./proxy/modelUtils");
 // Provider translator registry (auto-discovers translators from proxy/translators/)
 const registry = __importStar(require("./proxy/registry"));
+const listen_1 = require("./proxy/listen");
 // Dynamic imports (stays require for Electron-specific modules)
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const cryptoStore = require('./cryptoStore');
@@ -1272,48 +1275,60 @@ function handleRequest(req, res) {
     });
 }
 // ─── Server Start/Stop ────────────────────────────────────────────────────
-function startProxy() {
-    return new Promise((resolve, reject) => {
-        server = http.createServer(handleRequest);
-        // P1-9: Start managed cleanup interval
-        (0, shared_1.startCleanupInterval)();
-        let primaryPort = 50999;
-        function tryListen(port) {
-            server.listen(port, '127.0.0.1', () => {
-                proxyPort = server.address().port;
-                electron_log_1.default.info(`[Proxy] Server listening on http://127.0.0.1:${proxyPort}`);
-                resolve(proxyPort);
-            });
-        }
-        server.on('error', (err) => {
-            if (err.code === 'EADDRINUSE' && primaryPort === 50999) {
-                electron_log_1.default.warn('[Proxy] Port 50999 is already in use. Retrying on dynamic port...');
-                primaryPort = 0;
-                tryListen(0);
-            }
-            else {
-                electron_log_1.default.error('[Proxy] Startup failed:', err);
-                reject(err);
-            }
-        });
-        tryListen(primaryPort);
+async function startProxy() {
+    if (stoppingProxy)
+        await stoppingProxy;
+    if (server?.listening && proxyPort)
+        return proxyPort;
+    if (startingProxy)
+        return startingProxy;
+    const requiredPort = (0, listen_1.getRequiredProxyPort)(electron_1.app.getAppPath());
+    const newServer = http.createServer(handleRequest);
+    server = newServer;
+    (0, shared_1.startCleanupInterval)();
+    startingProxy = (0, listen_1.listenProxy)(newServer, requiredPort ?? 50999, requiredPort === undefined)
+        .then((port) => {
+        proxyPort = port;
+        electron_log_1.default.info(`[Proxy] Server listening on http://127.0.0.1:${proxyPort}`);
+        return proxyPort;
+    })
+        .catch((error) => {
+        (0, shared_1.stopCleanupInterval)();
+        server = null;
+        proxyPort = 0;
+        electron_log_1.default.error('[Proxy] Startup failed:', error);
+        throw error;
+    })
+        .finally(() => {
+        startingProxy = null;
     });
+    return startingProxy;
 }
 function stopProxy() {
-    return new Promise((resolve) => {
-        // P1-9: Stop cleanup interval to prevent orphaned timers
+    if (stoppingProxy)
+        return stoppingProxy;
+    stoppingProxy = (async () => {
+        // A shutdown requested during startup must also close the listener once ready.
+        if (startingProxy) {
+            try {
+                await startingProxy;
+            }
+            catch {
+                // A failed start already cleared its server and cleanup interval.
+            }
+        }
         (0, shared_1.stopCleanupInterval)();
         if (server) {
-            server.close(() => {
-                electron_log_1.default.info('[Proxy] Server stopped');
-                server = null;
-                resolve();
-            });
+            const closingServer = server;
+            await new Promise((resolve) => closingServer.close(() => resolve()));
+            electron_log_1.default.info('[Proxy] Server stopped');
         }
-        else {
-            resolve();
-        }
+        server = null;
+        proxyPort = 0;
+    })().finally(() => {
+        stoppingProxy = null;
     });
+    return stoppingProxy;
 }
 function getProxyPort() {
     return proxyPort;

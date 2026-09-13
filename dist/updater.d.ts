@@ -5,12 +5,14 @@ export declare enum MenuUpdateStep {
     RestartToUpdate = "Restart to Update"
 }
 export declare const updateActions: Record<string, (() => void) | undefined>;
-interface UpdaterState {
+export interface UpdaterState {
     type: string;
     update?: {
         version: string;
     };
 }
+/** Return the last state, including changes emitted before a renderer subscribed. */
+export declare function getUpdaterState(): UpdaterState;
 /** Broadcast a state change to every open BrowserWindow. */
 export declare function broadcastState(state: UpdaterState): void;
 /**
@@ -26,5 +28,4 @@ export declare function broadcastState(state: UpdaterState): void;
 export declare function initAutoUpdater(isHeadless: boolean): void;
 export declare function checkForUpdates(isManual?: boolean): void;
 export declare function quitAndInstall(): void;
-export {};
 //# sourceMappingURL=updater.d.ts.map

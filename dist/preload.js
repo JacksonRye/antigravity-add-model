@@ -920,6 +920,9 @@ window.addEventListener('DOMContentLoaded', () => {
             return false;
         return true;
     }
+    function isJsonResponse(contentType) {
+        return contentType?.split(';', 1)[0].trim().toLowerCase() === 'application/json';
+    }
     const customModelsCache = { models: [], ts: 0 };
     async function getCustomModelsForInjection() {
         if (Date.now() - customModelsCache.ts < 30000)
@@ -936,20 +939,27 @@ window.addEventListener('DOMContentLoaded', () => {
     XMLHttpRequest.prototype.open = function (method, url, async, username, password) {
         this._agy_url = typeof url === 'string' ? url : url.toString();
         this._agy_method = method;
-        return origXHROpen.call(this, method, url, async, username, password);
+        this._agy_async = async !== false;
+        return origXHROpen.call(this, method, url, async !== false, username, password);
     };
     const origXHRSend = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.send = function (body) {
-        const xhr = this;
-        const url = xhr._agy_url || '';
+        const url = this._agy_url || '';
         if ((url.includes('GetAvailableModels') || url.includes('fetchAvailableModels')) && isSafeToIntercept(url)) {
-            const origOnReady = xhr.onreadystatechange;
-            xhr.onreadystatechange = async function (ev) {
-                if (xhr.readyState === 4 && xhr.status === 200) {
-                    const customModels = await getCustomModelsForInjection();
+            // Warm the cache without delaying native XHR events. If it is not ready by
+            // DONE, leave the response alone; load/readystatechange ordering must survive.
+            if (this._agy_async)
+                void getCustomModelsForInjection();
+            const origOnReady = this.onreadystatechange;
+            this.onreadystatechange = (ev) => {
+                if (this.readyState === 4 &&
+                    this.status === 200 &&
+                    (this.responseType === '' || this.responseType === 'text') &&
+                    isJsonResponse(this.getResponseHeader('content-type'))) {
+                    const customModels = customModelsCache.models;
                     if (customModels && customModels.length > 0) {
                         try {
-                            const responseText = xhr.responseText;
+                            const responseText = this.responseText;
                             if (responseText && responseText.length > 10) {
                                 const parsed = JSON.parse(responseText);
                                 const modelsObj = (parsed.models || parsed.availableModels || parsed.available_models || {});
@@ -971,27 +981,26 @@ window.addEventListener('DOMContentLoaded', () => {
                                     };
                                 }
                                 // Override response
-                                Object.defineProperty(xhr, 'responseText', { value: JSON.stringify(parsed), writable: true });
-                                Object.defineProperty(xhr, 'response', { value: JSON.stringify(parsed), writable: true });
+                                Object.defineProperty(this, 'responseText', { value: JSON.stringify(parsed), writable: true });
+                                Object.defineProperty(this, 'response', { value: JSON.stringify(parsed), writable: true });
                             }
                         }
                         catch { /* ignore parse errors */ }
                     }
                 }
                 if (origOnReady)
-                    origOnReady.call(xhr, ev);
+                    origOnReady.call(this, ev);
             };
         }
-        return origXHRSend.call(xhr, body);
+        return origXHRSend.call(this, body);
     };
     // Intercept fetch responses for model endpoints
     const origFetch = window.fetch;
     window.fetch = async function (input, init) {
-        const url = typeof input === 'string' ? input : input.url;
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
         const response = await origFetch.call(window, input, init);
         if ((url.includes('GetAvailableModels') || url.includes('fetchAvailableModels')) && isSafeToIntercept(url) && response.ok) {
-            const contentType = response.headers.get('content-type') || '';
-            if (!contentType.startsWith('application/json')) {
+            if (!isJsonResponse(response.headers.get('content-type'))) {
                 return response;
             }
             const customModels = await getCustomModelsForInjection();

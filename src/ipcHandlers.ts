@@ -1,12 +1,13 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron';
 import { autoUpdater } from 'electron-updater';
-import { broadcastState, checkForUpdates } from './updater';
+import { broadcastState, checkForUpdates, getUpdaterState } from './updater';
 import log from 'electron-log/main';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { extensionAuthorities } from './customScheme';
 import { updateTrayAgentCount } from './tray';
 import { StorageManager } from './storage';
+import { getIdeInstallPath } from './ideInstall/constants';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const cryptoStore = require('./cryptoStore');
@@ -26,8 +27,16 @@ export function registerIpcHandlers(storageManager: StorageManager): void {
     }
     return result.filePaths[0];
   });
+  ipcMain.handle('dialog:open-workspaces', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory', 'createDirectory', 'multiSelections'],
+      title: 'Open workspaces',
+    });
+    return result.canceled || result.filePaths.length === 0 ? undefined : result.filePaths;
+  });
 
   // Auto-updater
+  ipcMain.handle('updater:get-state', () => getUpdaterState());
   ipcMain.handle('updater:apply', async () => {
     broadcastState({ type: 'ready' });
   });
@@ -268,18 +277,24 @@ export function registerIpcHandlers(storageManager: StorageManager): void {
         }
 
         const req = client.request(options, (res: { statusCode?: number; resume: () => void }) => {
-          // Any response (even 401/403) means the endpoint is reachable
-          if (res.statusCode! >= 200 && res.statusCode! < 500) {
+          if (res.statusCode! >= 200 && res.statusCode! < 400) {
             resolve({
               success: true,
               status: res.statusCode,
               message: `Endpoint reachable (HTTP ${res.statusCode})`,
             });
           } else {
+            const guidance: Record<number, string> = {
+              401: 'Authentication rejected (HTTP 401) — check your API key and provider configuration',
+              403: 'Access denied (HTTP 403) — check provider permissions, account eligibility, and location availability',
+              404: 'Endpoint not found (HTTP 404) — check the API URL and provider model/route availability',
+              405: 'Endpoint does not support HEAD (HTTP 405) — this connection test cannot verify model access',
+              429: 'Rate limited (HTTP 429) — check provider quota and retry later',
+            };
             resolve({
               success: false,
               status: res.statusCode,
-              error: `Server returned HTTP ${res.statusCode}`,
+              error: guidance[res.statusCode!] || `Server returned HTTP ${res.statusCode}`,
             });
           }
           res.resume(); // consume response to free memory
@@ -388,6 +403,23 @@ export function registerIpcHandlers(storageManager: StorageManager): void {
   ipcMain.handle('shell:open-external', async (_event, url: string) => {
     if (url.startsWith('https://') || url.startsWith('http://')) {
       await shell.openExternal(url);
+    }
+  });
+  ipcMain.handle('shell:reveal-in-file-picker', async (_event, filePath: string) => {
+    if (typeof filePath !== 'string' || !filePath.trim() || filePath.includes('\0') || !path.isAbsolute(filePath)) {
+      throw new Error('Expected an absolute filesystem path');
+    }
+    // Do not send URLs or nonexistent paths to a platform shell.
+    await fs.stat(filePath);
+    shell.showItemInFolder(filePath);
+  });
+
+  ipcMain.handle('ide:is-installed', async () => {
+    try {
+      const installation = await fs.stat(getIdeInstallPath());
+      return installation.isDirectory();
+    } catch {
+      return false;
     }
   });
 }

@@ -1,8 +1,11 @@
 @echo off
-echo Applying Antigravity patch...
-cd /d "%~dp0"
-npm run build
-powershell -ExecutionPolicy Bypass -File ".\deploy.ps1"
-echo.
-echo Patch applied successfully! Antigravity has been restarted.
-pause
+pushd "%~dp0"
+call npm run build
+if errorlevel 1 (
+  popd
+  exit /b 1
+)
+node "%~dp0scripts\deploy.mjs" %*
+set "patchExit=%errorlevel%"
+popd
+exit /b %patchExit%

@@ -24,15 +24,29 @@ const INITIAL_CHECK_DELAY_MS = 10000; // 10 seconds
 // How often to re-check for updates after the initial check (ms)
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
-interface UpdaterState {
+export interface UpdaterState {
   type: string;
   update?: { version: string };
 }
 
+let currentState: UpdaterState = { type: 'idle' };
+
+/** Return the last state, including changes emitted before a renderer subscribed. */
+export function getUpdaterState(): UpdaterState {
+  return {
+    ...currentState,
+    ...(currentState.update ? { update: { ...currentState.update } } : {}),
+  };
+}
+
 /** Broadcast a state change to every open BrowserWindow. */
 export function broadcastState(state: UpdaterState): void {
+  currentState = {
+    ...state,
+    ...(state.update ? { update: { ...state.update } } : {}),
+  };
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('updater:state-changed', state);
+    win.webContents.send('updater:state-changed', getUpdaterState());
   }
 }
 
