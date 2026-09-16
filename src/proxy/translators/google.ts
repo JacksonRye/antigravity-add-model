@@ -64,6 +64,7 @@ export function mapGeminiToGoogle(geminiBody: GeminiRequestBody, modelName: stri
   if (modelName && !body.model) {
     body.model = modelName;
   }
+  delete (body as any).stream;
   return body;
 }
 
@@ -132,30 +133,28 @@ export function mapGoogleChunkToGemini(chunk: unknown, _modelName: string): Gemi
  *
  * If the user's URL already contains one of these endpoints, it's kept as-is.
  */
-export function getGoogleApiUrl(baseUrl: string, modelName: string, isStream: boolean): string {
+export function getGoogleApiUrl(baseUrl: string, modelName: string, isStream: boolean, apiKey?: string): string {
   let url = baseUrl;
 
-  // If the URL doesn't already specify a method, append one
-  if (!url.includes(':generateContent') && !url.includes(':streamGenerateContent')) {
-    // Strip trailing slash if present
-    url = url.replace(/\/$/, '');
-
-    // Check if the URL ends with the model path (e.g. /models/gemini-1.5-pro)
+  if (!url.includes(":generateContent") && !url.includes(":streamGenerateContent")) {
+    url = url.replace(/\/$/, "");
     const modelPathPattern = /\/models\/([^\/]+)$/;
     const modelMatch = modelPathPattern.exec(url);
 
     if (modelMatch) {
-      // URL like .../v1beta/models/gemini-1.5-pro → append :method
-      const method = isStream ? ':streamGenerateContent' : ':generateContent';
+      const method = isStream ? ":streamGenerateContent?alt=sse" : ":generateContent";
       url += method;
     } else if (modelName) {
-      // Append full path with model name
-      const method = isStream ? ':streamGenerateContent' : ':generateContent';
-      url += `models/${modelName}${method}`;
+      const method = isStream ? ":streamGenerateContent?alt=sse" : ":generateContent";
+      url += `/models/${modelName}${method}`;
     } else {
-      // Fallback: assume the URL is already complete
-      log.warn('[GoogleTranslator] Could not determine model name for URL construction');
+      log.warn("[GoogleTranslator] Could not determine model name for URL construction");
     }
+  }
+
+  if (apiKey && apiKey !== "none" && !url.includes("key=")) {
+    const separator = url.includes("?") ? "&" : "?";
+    url += `${separator}key=${apiKey}`;
   }
 
   return url;

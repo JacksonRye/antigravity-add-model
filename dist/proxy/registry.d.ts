@@ -17,7 +17,7 @@ export interface TranslatorModule {
     mapGeminiToGoogle?: (body: unknown, modelName: string) => unknown;
     mapGoogleToGemini?: (res: unknown, modelName: string) => unknown;
     mapGoogleChunkToGemini?: (chunk: unknown, modelName: string) => unknown | null;
-    getGoogleApiUrl?: (baseUrl: string, modelName: string, isStream: boolean) => string;
+    getGoogleApiUrl?: (baseUrl: string, modelName: string, isStream: boolean, apiKey?: string) => string;
     [key: string]: unknown;
 }
 export interface ProviderHeaders {
@@ -36,5 +36,5 @@ export declare function translateResponse(provider: string, providerRes: unknown
 export declare function translateStreamChunk(provider: string, chunk: unknown, modelName: string): unknown;
 export declare function getProviderHeaders(provider: string, apiKey: string): ProviderHeaders;
 export declare function supportsStreaming(provider: string): boolean;
-export declare function getProviderUrl(baseUrl: string, modelName: string, isStream: boolean, translator: TranslatorModule | null): string;
+export declare function getProviderUrl(baseUrl: string, modelName: string, isStream: boolean, translator: TranslatorModule | null, apiKey?: string): string;
 //# sourceMappingURL=registry.d.ts.map

@@ -385,10 +385,11 @@ function handleCustomModelRequest(
 
   const provider = model.provider === 'custom' || model.provider === 'openrouter' ? 'openai' : model.provider;
 
-  const payload = registry.translateRequest(provider, geminiBody, model.externalModelName);
+  const payload = registry.translateRequest(provider, geminiBody, model.externalModelName); 
+    if (payload && typeof payload === "object") { delete (payload as any).stream; }
   const headers = registry.getProviderHeaders(provider, model.apiKey);
 
-  if (isStream && registry.supportsStreaming(provider)) {
+  if (isStream && registry.supportsStreaming(provider) && provider !== 'google') {
     (payload as Record<string, unknown>).stream = true;
   }
 

@@ -346,8 +346,11 @@ function handleCustomModelRequest(res, model, geminiBody, isStream, retryCount =
     const REQUEST_TIMEOUT_MS = model.timeout || 120000;
     const provider = model.provider === 'custom' || model.provider === 'openrouter' ? 'openai' : model.provider;
     const payload = registry.translateRequest(provider, geminiBody, model.externalModelName);
+    if (payload && typeof payload === "object") {
+        delete payload.stream;
+    }
     const headers = registry.getProviderHeaders(provider, model.apiKey);
-    if (isStream && registry.supportsStreaming(provider)) {
+    if (isStream && registry.supportsStreaming(provider) && provider !== 'google') {
         payload.stream = true;
     }
     let finalUrlStr = model.apiUrl;

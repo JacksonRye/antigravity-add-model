@@ -81,6 +81,6 @@ export declare function mapGoogleChunkToGemini(chunk: unknown, _modelName: strin
  *
  * If the user's URL already contains one of these endpoints, it's kept as-is.
  */
-export declare function getGoogleApiUrl(baseUrl: string, modelName: string, isStream: boolean): string;
+export declare function getGoogleApiUrl(baseUrl: string, modelName: string, isStream: boolean, apiKey?: string): string;
 export {};
 //# sourceMappingURL=google.d.ts.map

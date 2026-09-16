@@ -24,7 +24,7 @@ export interface TranslatorModule {
   mapGeminiToGoogle?: (body: unknown, modelName: string) => unknown;
   mapGoogleToGemini?: (res: unknown, modelName: string) => unknown;
   mapGoogleChunkToGemini?: (chunk: unknown, modelName: string) => unknown | null;
-  getGoogleApiUrl?: (baseUrl: string, modelName: string, isStream: boolean) => string;
+  getGoogleApiUrl?: (baseUrl: string, modelName: string, isStream: boolean, apiKey?: string) => string;
   [key: string]: unknown;
 }
 
@@ -162,10 +162,11 @@ export function getProviderUrl(
   modelName: string,
   isStream: boolean,
   translator: TranslatorModule | null,
+  apiKey?: string,
 ): string {
   // Google AI Studio: dynamic streaming vs non-streaming URL
   if (translator && typeof translator['getGoogleApiUrl'] === 'function') {
-    return (translator['getGoogleApiUrl'] as (...args: unknown[]) => string)(baseUrl, modelName, isStream);
+    return (translator['getGoogleApiUrl'] as (...args: unknown[]) => string)(baseUrl, modelName, isStream, apiKey);
   }
   // Ollama: normalize to standard /v1/chat/completions endpoint
   if (translator && typeof translator['getOllamaApiUrl'] === 'function') {

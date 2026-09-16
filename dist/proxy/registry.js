@@ -163,10 +163,10 @@ function supportsStreaming(provider) {
     return OPENAI_COMPAT.has(provider) || ANTHROPIC_COMPAT.has(provider) || provider === 'google';
 }
 // ─── URL Helpers ──────────────────────────────────────────────────────────
-function getProviderUrl(baseUrl, modelName, isStream, translator) {
+function getProviderUrl(baseUrl, modelName, isStream, translator, apiKey) {
     // Google AI Studio: dynamic streaming vs non-streaming URL
     if (translator && typeof translator['getGoogleApiUrl'] === 'function') {
-        return translator['getGoogleApiUrl'](baseUrl, modelName, isStream);
+        return translator['getGoogleApiUrl'](baseUrl, modelName, isStream, apiKey);
     }
     // Ollama: normalize to standard /v1/chat/completions endpoint
     if (translator && typeof translator['getOllamaApiUrl'] === 'function') {
