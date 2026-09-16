@@ -26,6 +26,7 @@ export interface CustomModel {
   _slug?: string;
   timeout?: number;
   maxRetries?: number;
+  fallbackModel?: string;
 }
 
 interface GeminiRequestBody {
@@ -402,7 +403,7 @@ function handleCustomModelRequest(
   // P3-16: Ollama uses URL normalization for default port and endpoint
   if (provider === 'google' || provider === 'ollama') {
     const providerTranslator = registry.getTranslator(provider);
-    finalUrlStr = registry.getProviderUrl(finalUrlStr, model.externalModelName, isStream, providerTranslator);
+    finalUrlStr = registry.getProviderUrl(finalUrlStr, model.externalModelName, isStream, providerTranslator, model.apiKey);
   } else if (provider === 'openai' || model.provider === 'custom' || model.provider === 'openrouter') {
     const urlLower = finalUrlStr.toLowerCase();
     if (!urlLower.includes('/chat/completions') && !urlLower.includes('/completions')) {
@@ -457,6 +458,18 @@ function handleCustomModelRequest(
           if (retryCount < MAX_RETRIES) {
             log.warn(`[Proxy] Stream error, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
             setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), 1000 * (retryCount + 1));
+            return;
+          }
+
+          const fallbackModelName = model.fallbackModel || (model.externalModelName === 'gemini-3.8-flash' ? 'gemini-3.7-flash' : undefined);
+          if (apiRes.statusCode === 429 && fallbackModelName && fallbackModelName !== model.externalModelName) {
+            log.warn(`[Proxy] Model ${model.externalModelName} received 429 quota exhausted/rate limit. Automatically falling back to ${fallbackModelName}...`);
+            const fallbackModel: CustomModel = {
+              ...model,
+              externalModelName: fallbackModelName,
+              fallbackModel: undefined,
+            };
+            handleCustomModelRequest(res, fallbackModel, geminiBody, isStream, 0);
             return;
           }
 
@@ -594,15 +607,28 @@ function handleCustomModelRequest(
           return;
         }
 
-        // Retry on 429 with Retry-After header support + exponential backoff
-        if (apiRes.statusCode === 429 && retryCount < MAX_RETRIES) {
-          const retryAfter = parseRetryAfter(apiRes.headers);
-          const delay = retryAfter > 0 ? retryAfter : 2000 * Math.pow(2, retryCount);
-          log.warn(
-            `[Proxy] Rate limited (429) for ${model.name}, retrying in ${delay}ms (${retryCount + 1}/${MAX_RETRIES})...`,
-          );
-          setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), delay);
-          return;
+        // Retry on 429 with Retry-After header support + exponential backoff or fallback
+        if (apiRes.statusCode === 429) {
+          if (retryCount < MAX_RETRIES) {
+            const retryAfter = parseRetryAfter(apiRes.headers);
+            const delay = retryAfter > 0 ? retryAfter : 2000 * Math.pow(2, retryCount);
+            log.warn(
+              `[Proxy] Rate limited (429) for ${model.name}, retrying in ${delay}ms (${retryCount + 1}/${MAX_RETRIES})...`,
+            );
+            setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), delay);
+            return;
+          }
+          const fallbackModelName = model.fallbackModel || (model.externalModelName === 'gemini-3.8-flash' ? 'gemini-3.7-flash' : undefined);
+          if (fallbackModelName && fallbackModelName !== model.externalModelName) {
+            log.warn(`[Proxy] Model ${model.externalModelName} received 429 rate limit. Automatically falling back to ${fallbackModelName}...`);
+            const fallbackModel: CustomModel = {
+              ...model,
+              externalModelName: fallbackModelName,
+              fallbackModel: undefined,
+            };
+            handleCustomModelRequest(res, fallbackModel, geminiBody, isStream, 0);
+            return;
+          }
         }
 
         if (apiRes.statusCode! >= 400) {
