@@ -28,6 +28,7 @@ export interface CustomModel {
   maxRetries?: number;
   fallbackModel?: string;
   thinkingLevel?: string;
+  noTools?: boolean;
 }
 
 interface GeminiRequestBody {
@@ -391,7 +392,50 @@ function handleCustomModelRequest(
 
   const provider = model.provider === 'custom' || model.provider === 'openrouter' ? 'openai' : model.provider;
 
+  // Zero-Tool Plan Mode detection (via model.noTools or /plan slash command)
+  let isPlan = Boolean(model.noTools);
+  if (geminiBody.contents && Array.isArray(geminiBody.contents)) {
+    for (let i = geminiBody.contents.length - 1; i >= 0; i--) {
+      const c = geminiBody.contents[i];
+      if (c && (!c.role || c.role === 'user') && Array.isArray(c.parts)) {
+        for (const p of c.parts) {
+          if (typeof p.text === 'string') {
+            const trimmed = p.text.trim();
+            const planMatch = trimmed.match(/^\/plan(?:\s+|:\s*|$)([\s\S]*)$/i);
+            if (planMatch) {
+              isPlan = true;
+              p.text = planMatch[1].trim() || 'Please outline a structured architectural plan and strategy based on the context so far.';
+              break;
+            }
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  if (isPlan) {
+    delete geminiBody.tools;
+    delete (geminiBody as Record<string, unknown>).toolConfig;
+    const planDirective =
+      'PLAN MODE ACTIVATED: You are in pure architectural planning and strategy mode. ' +
+      'All tools and execution are strictly disabled. ' +
+      'Directly provide a clear, structured, high-level plan and strategic recommendations based on the context.';
+    if (!geminiBody.systemInstruction) {
+      geminiBody.systemInstruction = { parts: [{ text: planDirective }] };
+    } else {
+      if (!Array.isArray(geminiBody.systemInstruction.parts)) {
+        geminiBody.systemInstruction.parts = [];
+      }
+      geminiBody.systemInstruction.parts.push({ text: planDirective });
+    }
+  }
+
   const payload = registry.translateRequest(provider, geminiBody, model.externalModelName);
+  if (isPlan && payload && typeof payload === 'object') {
+    delete (payload as Record<string, unknown>).tools;
+    delete (payload as Record<string, unknown>).toolConfig;
+  }
   // THINKING_LEVEL_PATCH
   if (provider === 'google' && payload && typeof payload === 'object') {
     const genConfig = (((payload as Record<string, unknown>).generationConfig || {}) as Record<string, unknown>);
@@ -1471,6 +1515,36 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
             resolveFileData(actualGeminiBody, req.headers as Record<string, string | string[] | undefined>).then(() => {
               handleCustomModelRequest(res, matchedCustomModel, actualGeminiBody, isStream);
             });
+            return;
+          }
+        }
+
+        // Native Google model: If /plan was entered, inject strict planning directive into user turn
+        const actualGeminiBody = (reqJson.request || reqJson) as GeminiRequestBody;
+        if (actualGeminiBody && actualGeminiBody.contents && Array.isArray(actualGeminiBody.contents)) {
+          let nativePlanDetected = false;
+          for (let i = actualGeminiBody.contents.length - 1; i >= 0; i--) {
+            const c = actualGeminiBody.contents[i];
+            if (c && (!c.role || c.role === 'user') && Array.isArray(c.parts)) {
+              for (const p of c.parts) {
+                if (typeof p.text === 'string') {
+                  const trimmed = p.text.trim();
+                  const planMatch = trimmed.match(/^\/plan(?:\s+|:\s*|$)([\s\S]*)$/i);
+                  if (planMatch) {
+                    nativePlanDetected = true;
+                    const remainder = planMatch[1].trim() || 'Please formulate a structured architectural plan and strategy based on the context so far.';
+                    p.text = `[PLAN MODE: Output only your architectural plan, design, and strategic recommendations in text. Do not invoke any tools, commands, or file edits.]\n\n${remainder}`;
+                    break;
+                  }
+                }
+              }
+              break;
+            }
+          }
+          if (nativePlanDetected) {
+            log.info('[Proxy] Native model /plan command detected; injected planning instruction.');
+            const modifiedBuffer = Buffer.from(JSON.stringify(reqJson), 'utf-8');
+            proxyToGoogle(req, res, modifiedBuffer);
             return;
           }
         }
