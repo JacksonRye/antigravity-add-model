@@ -455,21 +455,21 @@ function handleCustomModelRequest(
         apiRes.on('data', (chunk: Buffer) => errorBody += chunk.toString());
         apiRes.on('end', () => {
           log.error(`[Proxy] Stream API error (${apiRes.statusCode}) for ${model.name}: ${errorBody.substring(0, 300)}`);
-          if (retryCount < MAX_RETRIES) {
-            log.warn(`[Proxy] Stream error, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
-            setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), 1000 * (retryCount + 1));
-            return;
-          }
-
           const fallbackModelName = model.fallbackModel || (model.externalModelName === 'gemini-3.8-flash' ? 'gemini-3.7-flash' : undefined);
           if (apiRes.statusCode === 429 && fallbackModelName && fallbackModelName !== model.externalModelName) {
-            log.warn(`[Proxy] Model ${model.externalModelName} received 429 quota exhausted/rate limit. Automatically falling back to ${fallbackModelName}...`);
+            log.warn(`[Proxy] Model ${model.externalModelName} received 429 quota exhausted/rate limit. Immediately falling back to ${fallbackModelName}...`);
             const fallbackModel: CustomModel = {
               ...model,
               externalModelName: fallbackModelName,
               fallbackModel: undefined,
             };
             handleCustomModelRequest(res, fallbackModel, geminiBody, isStream, 0);
+            return;
+          }
+
+          if (retryCount < MAX_RETRIES) {
+            log.warn(`[Proxy] Stream error, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
+            setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), 1000 * (retryCount + 1));
             return;
           }
 
@@ -609,6 +609,17 @@ function handleCustomModelRequest(
 
         // Retry on 429 with Retry-After header support + exponential backoff or fallback
         if (apiRes.statusCode === 429) {
+          const fallbackModelName = model.fallbackModel || (model.externalModelName === 'gemini-3.8-flash' ? 'gemini-3.7-flash' : undefined);
+          if (fallbackModelName && fallbackModelName !== model.externalModelName) {
+            log.warn(`[Proxy] Model ${model.externalModelName} received 429 rate limit. Immediately falling back to ${fallbackModelName}...`);
+            const fallbackModel: CustomModel = {
+              ...model,
+              externalModelName: fallbackModelName,
+              fallbackModel: undefined,
+            };
+            handleCustomModelRequest(res, fallbackModel, geminiBody, isStream, 0);
+            return;
+          }
           if (retryCount < MAX_RETRIES) {
             const retryAfter = parseRetryAfter(apiRes.headers);
             const delay = retryAfter > 0 ? retryAfter : 2000 * Math.pow(2, retryCount);
@@ -616,17 +627,6 @@ function handleCustomModelRequest(
               `[Proxy] Rate limited (429) for ${model.name}, retrying in ${delay}ms (${retryCount + 1}/${MAX_RETRIES})...`,
             );
             setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), delay);
-            return;
-          }
-          const fallbackModelName = model.fallbackModel || (model.externalModelName === 'gemini-3.8-flash' ? 'gemini-3.7-flash' : undefined);
-          if (fallbackModelName && fallbackModelName !== model.externalModelName) {
-            log.warn(`[Proxy] Model ${model.externalModelName} received 429 rate limit. Automatically falling back to ${fallbackModelName}...`);
-            const fallbackModel: CustomModel = {
-              ...model,
-              externalModelName: fallbackModelName,
-              fallbackModel: undefined,
-            };
-            handleCustomModelRequest(res, fallbackModel, geminiBody, isStream, 0);
             return;
           }
         }
