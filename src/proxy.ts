@@ -27,6 +27,7 @@ export interface CustomModel {
   timeout?: number;
   maxRetries?: number;
   fallbackModel?: string;
+  thinkingLevel?: string;
 }
 
 interface GeminiRequestBody {
@@ -390,8 +391,20 @@ function handleCustomModelRequest(
 
   const provider = model.provider === 'custom' || model.provider === 'openrouter' ? 'openai' : model.provider;
 
-  const payload = registry.translateRequest(provider, geminiBody, model.externalModelName); 
-    if (payload && typeof payload === "object") { delete (payload as any).stream; }
+  const payload = registry.translateRequest(provider, geminiBody, model.externalModelName);
+  // THINKING_LEVEL_PATCH
+  if (provider === 'google' && payload && typeof payload === 'object') {
+    const genConfig = (((payload as Record<string, unknown>).generationConfig || {}) as Record<string, unknown>);
+    genConfig.thinkingConfig = {
+      thinkingLevel: model.thinkingLevel || 'MEDIUM',
+    };
+    delete (genConfig.thinkingConfig as Record<string, unknown>).thinkingBudget;
+    delete (genConfig.thinkingConfig as Record<string, unknown>).thinking_budget;
+    (payload as Record<string, unknown>).generationConfig = genConfig;
+  }
+  if (payload && typeof payload === 'object') {
+    delete (payload as any).stream;
+  }
   const headers = registry.getProviderHeaders(provider, model.apiKey);
 
   if (isStream && registry.supportsStreaming(provider) && provider !== 'google') {

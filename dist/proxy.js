@@ -351,7 +351,17 @@ function handleCustomModelRequest(res, model, geminiBody, isStream, retryCount =
     const REQUEST_TIMEOUT_MS = model.timeout || 120000;
     const provider = model.provider === 'custom' || model.provider === 'openrouter' ? 'openai' : model.provider;
     const payload = registry.translateRequest(provider, geminiBody, model.externalModelName);
-    if (payload && typeof payload === "object") {
+    // THINKING_LEVEL_PATCH
+    if (provider === 'google' && payload && typeof payload === 'object') {
+        const genConfig = (payload.generationConfig || {});
+        genConfig.thinkingConfig = {
+            thinkingLevel: model.thinkingLevel || 'MEDIUM',
+        };
+        delete genConfig.thinkingConfig.thinkingBudget;
+        delete genConfig.thinkingConfig.thinking_budget;
+        payload.generationConfig = genConfig;
+    }
+    if (payload && typeof payload === 'object') {
         delete payload.stream;
     }
     const headers = registry.getProviderHeaders(provider, model.apiKey);

@@ -17,6 +17,7 @@ export interface CustomModel {
     timeout?: number;
     maxRetries?: number;
     fallbackModel?: string;
+    thinkingLevel?: string;
 }
 export declare function startProxy(): Promise<number>;
 export declare function stopProxy(): Promise<void>;
