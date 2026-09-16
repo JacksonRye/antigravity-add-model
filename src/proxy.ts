@@ -292,8 +292,12 @@ function proxyToGoogle(req: http.IncomingMessage, res: http.ServerResponse, reqB
 
   proxyReq.on('error', (err) => {
     log.error('[Proxy] Google Forwarding Error:', err);
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: { message: 'Proxy forwarding failed: ' + err.message } }));
+    if (!res.headersSent && !res.writableEnded) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Proxy forwarding failed: ' + err.message } }));
+    } else if (!res.writableEnded) {
+      res.end();
+    }
   });
 
   if (reqBody) {
@@ -455,8 +459,46 @@ function handleCustomModelRequest(
             setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), 1000 * (retryCount + 1));
             return;
           }
-          res.writeHead(apiRes.statusCode!, { 'Content-Type': 'application/json' });
-          res.end(errorBody);
+
+          if (!res.headersSent && !res.writableEnded) {
+            res.writeHead(200, {
+              'Content-Type': 'text/event-stream',
+              'Cache-Control': 'no-cache',
+              Connection: 'keep-alive',
+            });
+
+            let friendlyMessage = `Provider API Error (${apiRes.statusCode}): `;
+            try {
+              const errObj = JSON.parse(errorBody);
+              friendlyMessage += errObj.error?.message || errorBody;
+            } catch {
+              friendlyMessage += errorBody.substring(0, 200);
+            }
+
+            const errorCandidate = {
+              response: {
+                candidates: [
+                  {
+                    content: {
+                      parts: [
+                        {
+                          text: `\n\n⚠️ **${friendlyMessage}**\n\n*(Rate limit / quota exhaustion on your provider. Please try again shortly or switch models in the dropdown.)*`,
+                        },
+                      ],
+                      role: 'model',
+                    },
+                    finishReason: 'STOP',
+                  },
+                ],
+              },
+            };
+
+            res.write(`data: ${JSON.stringify(errorCandidate)}\n\n`);
+            res.write('data: [DONE]\n\n');
+            res.end();
+          } else if (!res.writableEnded) {
+            res.end();
+          }
         });
         return;
       }
@@ -566,8 +608,12 @@ function handleCustomModelRequest(
         if (apiRes.statusCode! >= 400) {
           // P0-3: Only log status code and model name, NOT response body content
           log.error(`[Proxy] API error (${apiRes.statusCode}) for ${model.name}`);
-          res.writeHead(apiRes.statusCode!, { 'Content-Type': 'application/json' });
-          res.end(body);
+          if (!res.headersSent && !res.writableEnded) {
+            res.writeHead(apiRes.statusCode!, { 'Content-Type': 'application/json' });
+            res.end(body);
+          } else if (!res.writableEnded) {
+            res.end();
+          }
           return;
         }
 
