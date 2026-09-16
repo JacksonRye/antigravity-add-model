@@ -99,7 +99,7 @@ function getCustomModelsPath(): string {
 function toSlug(model: CustomModel): string {
   return (
     'custom-' +
-    (model.externalModelName || model.name)
+    (model.name || model.externalModelName)
       .replace(/^models\//, '')
       .replace(/[^a-zA-Z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '')
