@@ -52,6 +52,7 @@ interface GeminiRequestBody {
 
 let server: http.Server | null = null;
 let proxyPort = 0;
+let voiceGateway: VoiceGateway | null = null;
 let startingProxy: Promise<number> | null = null;
 let stoppingProxy: Promise<void> | null = null;
 
@@ -73,6 +74,7 @@ import { detectModelCapabilities, detectModelCapabilitiesByName } from './proxy/
 // Provider translator registry (auto-discovers translators from proxy/translators/)
 import * as registry from './proxy/registry';
 import { getRequiredProxyPort, listenProxy } from './proxy/listen';
+import { attachVoiceGateway, VoiceGateway } from './proxy/voiceGateway';
 
 // Dynamic imports (stays require for Electron-specific modules)
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -1596,6 +1598,19 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
 // ─── Server Start/Stop ────────────────────────────────────────────────────
 
+export function getGoogleApiKey(): string | null {
+  try {
+    const models = loadCustomModels();
+    const googleModel = models.find((m) => m.provider === 'google' && m.apiKey && m.apiKey !== 'none');
+    if (googleModel && googleModel.apiKey) {
+      return googleModel.apiKey;
+    }
+  } catch (err) {
+    log.warn('[Proxy] Failed to load custom models for Google API key:', err);
+  }
+  return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || null;
+}
+
 export async function startProxy(): Promise<number> {
   if (stoppingProxy) await stoppingProxy;
   if (server?.listening && proxyPort) return proxyPort;
@@ -1604,6 +1619,7 @@ export async function startProxy(): Promise<number> {
   const requiredPort = getRequiredProxyPort(app.getAppPath());
   const newServer = http.createServer(handleRequest);
   server = newServer;
+  voiceGateway = attachVoiceGateway(newServer, getGoogleApiKey);
   startCleanupInterval();
   startingProxy = listenProxy(newServer, requiredPort ?? 50999, requiredPort === undefined)
     .then((port) => {
@@ -1613,6 +1629,10 @@ export async function startProxy(): Promise<number> {
     })
     .catch((error) => {
       stopCleanupInterval();
+      if (voiceGateway) {
+        voiceGateway.close();
+        voiceGateway = null;
+      }
       server = null;
       proxyPort = 0;
       log.error('[Proxy] Startup failed:', error);
@@ -1636,6 +1656,10 @@ export function stopProxy(): Promise<void> {
       }
     }
     stopCleanupInterval();
+    if (voiceGateway) {
+      voiceGateway.close();
+      voiceGateway = null;
+    }
     if (server) {
       const closingServer = server;
       await new Promise<void>((resolve) => closingServer.close(() => resolve()));

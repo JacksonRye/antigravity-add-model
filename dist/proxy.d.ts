@@ -20,6 +20,7 @@ export interface CustomModel {
     thinkingLevel?: string;
     noTools?: boolean;
 }
+export declare function getGoogleApiKey(): string | null;
 export declare function startProxy(): Promise<number>;
 export declare function stopProxy(): Promise<void>;
 export declare function getProxyPort(): number;

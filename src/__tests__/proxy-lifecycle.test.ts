@@ -74,6 +74,7 @@ function fixture(fixed = true) {
     './proxy/modelUtils': {},
     './proxy/registry': {},
     './cryptoStore': {},
+    './proxy/voiceGateway': { attachVoiceGateway: vi.fn(() => ({ close: vi.fn() })) },
     // These are the production marker parser and listener, with only the socket mocked.
     './proxy/listen': { getRequiredProxyPort, listenProxy },
   };

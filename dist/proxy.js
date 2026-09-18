@@ -41,6 +41,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.getGoogleApiKey = getGoogleApiKey;
 exports.startProxy = startProxy;
 exports.stopProxy = stopProxy;
 exports.getProxyPort = getProxyPort;
@@ -53,6 +54,7 @@ const electron_log_1 = __importDefault(require("electron-log"));
 // ─── Imports ──────────────────────────────────────────────────────────────
 let server = null;
 let proxyPort = 0;
+let voiceGateway = null;
 let startingProxy = null;
 let stoppingProxy = null;
 // Shared cross-turn state
@@ -62,6 +64,7 @@ const modelUtils_1 = require("./proxy/modelUtils");
 // Provider translator registry (auto-discovers translators from proxy/translators/)
 const registry = __importStar(require("./proxy/registry"));
 const listen_1 = require("./proxy/listen");
+const voiceGateway_1 = require("./proxy/voiceGateway");
 // Dynamic imports (stays require for Electron-specific modules)
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const cryptoStore = require('./cryptoStore');
@@ -1428,6 +1431,19 @@ function handleRequest(req, res) {
     });
 }
 // ─── Server Start/Stop ────────────────────────────────────────────────────
+function getGoogleApiKey() {
+    try {
+        const models = loadCustomModels();
+        const googleModel = models.find((m) => m.provider === 'google' && m.apiKey && m.apiKey !== 'none');
+        if (googleModel && googleModel.apiKey) {
+            return googleModel.apiKey;
+        }
+    }
+    catch (err) {
+        electron_log_1.default.warn('[Proxy] Failed to load custom models for Google API key:', err);
+    }
+    return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || null;
+}
 async function startProxy() {
     if (stoppingProxy)
         await stoppingProxy;
@@ -1438,6 +1454,7 @@ async function startProxy() {
     const requiredPort = (0, listen_1.getRequiredProxyPort)(electron_1.app.getAppPath());
     const newServer = http.createServer(handleRequest);
     server = newServer;
+    voiceGateway = (0, voiceGateway_1.attachVoiceGateway)(newServer, getGoogleApiKey);
     (0, shared_1.startCleanupInterval)();
     startingProxy = (0, listen_1.listenProxy)(newServer, requiredPort ?? 50999, requiredPort === undefined)
         .then((port) => {
@@ -1447,6 +1464,10 @@ async function startProxy() {
     })
         .catch((error) => {
         (0, shared_1.stopCleanupInterval)();
+        if (voiceGateway) {
+            voiceGateway.close();
+            voiceGateway = null;
+        }
         server = null;
         proxyPort = 0;
         electron_log_1.default.error('[Proxy] Startup failed:', error);
@@ -1471,6 +1492,10 @@ function stopProxy() {
             }
         }
         (0, shared_1.stopCleanupInterval)();
+        if (voiceGateway) {
+            voiceGateway.close();
+            voiceGateway = null;
+        }
         if (server) {
             const closingServer = server;
             await new Promise((resolve) => closingServer.close(() => resolve()));
