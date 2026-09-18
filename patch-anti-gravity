@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -e
+
+echo "========================================================"
+echo "   ANTIGRAVITY AUTO-UPDATE PROTECTION (STABLE BASE)     "
+echo "========================================================"
+echo ""
+
+APP_PATH="/Applications/Antigravity.app"
+REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "[1/5] Closing Antigravity..."
+pkill -9 -fi "Antigravity" 2>/dev/null || true
+pkill -9 -fi "language_server" 2>/dev/null || true
+sleep 1
+
+echo "[2/5] Restoring custom models configuration..."
+if [ -f "$HOME/.gemini/antigravity/custom_models.json.pre-voice-checkpoint" ]; then
+    cp -n "$HOME/.gemini/antigravity/custom_models.json.pre-voice-checkpoint" "$HOME/.gemini/antigravity/custom_models.json" 2>/dev/null || true
+fi
+
+echo "[3/5] Switching to stable verified checkpoint (pre-voice)..."
+cd "$REPO_DIR"
+git checkout checkpoint-voice-pre-mvp-tag 2>/dev/null || git checkout checkpoint-voice-pre-mvp
+
+echo "[4/5] Building and deploying stable update-protection patch..."
+npm run build
+sudo rm -f "$APP_PATH/Contents/Resources/.antigravity-model-patch/deploy.lock" 2>/dev/null || true
+sudo ./deploy.sh
+
+echo "[5/5] Launching patched Antigravity..."
+open -a "$APP_PATH"
+
+echo ""
+echo "========================================================"
+echo "    STABLE PATCH APPLIED! AUTO-UPDATE PROTECTED!        "
+echo "========================================================"
+echo ""
+if [ -t 0 ]; then
+    read -n 1 -s -r -p "Press any key to close this window..." 2>/dev/null || true
+    echo ""
+fi

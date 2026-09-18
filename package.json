@@ -22,7 +22,10 @@
     "lint:fix": "npx eslint src/**/*.ts --fix",
     "format": "npx prettier --write \"src/**/*.ts\"",
     "format:check": "npx prettier --check \"src/**/*.ts\"",
-    "clean": "npx tsc --build --clean"
+    "clean": "npx tsc --build --clean",
+    "patch-anti-gravity": "bash ./patch-anti-gravity",
+    "live-voice-v1": "bash ./live-voice-v1",
+    "live-voice-mvp": "bash ./live-voice-v1"
   },
   "dependencies": {
     "chrome-devtools-mcp": "^0.23.0",

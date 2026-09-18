@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -e
+
+echo "========================================================"
+echo "      ANTIGRAVITY LIVE VOICE V1 / MVP DEPLOYER          "
+echo "========================================================"
+echo ""
+
+APP_PATH="/Applications/Antigravity.app"
+REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "[1/5] Closing Antigravity..."
+pkill -9 -fi "Antigravity" 2>/dev/null || true
+pkill -9 -fi "language_server" 2>/dev/null || true
+sleep 1
+
+echo "[2/5] Switching to feat/realtime-voice branch..."
+cd "$REPO_DIR"
+git checkout feat/realtime-voice
+
+echo "[3/5] Compiling live voice gateway and UI..."
+npm run build
+
+echo "[4/5] Deploying live voice patch..."
+sudo rm -f "$APP_PATH/Contents/Resources/.antigravity-model-patch/deploy.lock" 2>/dev/null || true
+sudo ./deploy.sh
+
+echo "[5/5] Launching Antigravity with Live Voice enabled..."
+open -a "$APP_PATH"
+
+echo ""
+echo "========================================================"
+echo "    LIVE VOICE V1 READY! (Cmd+Shift+V or Click Mic)     "
+echo "========================================================"
+echo ""
+if [ -t 0 ]; then
+    read -n 1 -s -r -p "Press any key to close this window..." 2>/dev/null || true
+    echo ""
+fi
