@@ -48,6 +48,7 @@ export const REQUIRED_BUILD_FILES = [
   'proxy/listen.js',
   'proxy/modelUtils.js',
   'proxy/translators/utils.js',
+  'proxy/voiceGateway.js',
   'services/settingsService.js',
 ];
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { VoiceGateway } from '../proxy/voiceGateway';
 import { EventEmitter } from 'events';
 
@@ -11,28 +11,37 @@ vi.mock('electron-log', () => ({
 }));
 
 describe('VoiceGateway', () => {
-  it('correctly handles upgrade requests for /ws/live and /voice/live', () => {
+  it('correctly handles upgrade requests for /ws/live and performs RFC-6455 handshake', () => {
     const gateway = new VoiceGateway({
       getApiKey: () => 'test-api-key',
     });
 
     const mockReq = {
       url: '/ws/live',
-      headers: { host: '127.0.0.1:50999' },
+      headers: {
+        host: '127.0.0.1:50999',
+        'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+      },
     } as any;
 
-    const mockSocket = new EventEmitter();
-    const mockHead = Buffer.from([]);
-
-    let upgradeHandled = false;
-    // Mock the wss handleUpgrade
-    (gateway as any).wss.handleUpgrade = vi.fn((req, sock, head, cb) => {
-      upgradeHandled = true;
+    let writtenData = '';
+    const mockSocket = Object.assign(new EventEmitter(), {
+      write: vi.fn((data: string) => {
+        writtenData += data;
+        return true;
+      }),
+      end: vi.fn(),
+      destroy: vi.fn(),
+      destroyed: false,
     });
 
-    const handled = gateway.handleUpgrade(mockReq, mockSocket, mockHead);
+    const handled = gateway.handleUpgrade(mockReq, mockSocket as any, Buffer.from([]));
     expect(handled).toBe(true);
-    expect(upgradeHandled).toBe(true);
+    expect(mockSocket.write).toHaveBeenCalled();
+    expect(writtenData).toContain('HTTP/1.1 101 Switching Protocols');
+    expect(writtenData).toContain('Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=');
+
+    gateway.close();
   });
 
   it('rejects upgrade requests for unrelated paths', () => {
@@ -45,7 +54,8 @@ describe('VoiceGateway', () => {
       headers: { host: '127.0.0.1:50999' },
     } as any;
 
-    const handled = gateway.handleUpgrade(mockReq, new EventEmitter() as any, Buffer.from([]));
+    const mockSocket = new EventEmitter();
+    const handled = gateway.handleUpgrade(mockReq, mockSocket as any, Buffer.from([]));
     expect(handled).toBe(false);
   });
 });
