@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { VoiceGateway } from '../proxy/voiceGateway';
+import { VoiceGateway, encodeFrame, LocalWsConnection } from '../proxy/voiceGateway';
 import { EventEmitter } from 'events';
+import * as crypto from 'crypto';
 
 vi.mock('electron-log', () => ({
   default: {
@@ -57,5 +58,66 @@ describe('VoiceGateway', () => {
     const mockSocket = new EventEmitter();
     const handled = gateway.handleUpgrade(mockReq, mockSocket as any, Buffer.from([]));
     expect(handled).toBe(false);
+  });
+
+  it('correctly tracks and provides active GCP context', () => {
+    const gateway = new VoiceGateway({
+      getApiKey: () => 'fallback-key',
+    });
+
+    expect(gateway.getActiveGcpContext().projectId).toBeUndefined();
+
+    gateway.setActiveGcpContext({ projectId: 'test-gcp-project', token: 'Bearer test-token' });
+    const ctx = gateway.getActiveGcpContext();
+    expect(ctx.projectId).toBe('test-gcp-project');
+    expect(ctx.token).toBe('Bearer test-token');
+
+    gateway.close();
+  });
+
+  it('encodes unmasked server frames and masked client frames per RFC-6455', () => {
+    const text = 'Hello Vertex AI';
+    
+    // Server frame (unmasked)
+    const serverFrame = encodeFrame(text, false, false);
+    expect(serverFrame[0]).toBe(0x81); // FIN + text opcode 0x01
+    expect(serverFrame[1] & 0x80).toBe(0x00); // Mask bit 0
+    expect(serverFrame.subarray(2).toString('utf-8')).toBe(text);
+
+    // Client frame (masked)
+    const clientFrame = encodeFrame(text, false, true);
+    expect(clientFrame[0]).toBe(0x81); // FIN + text opcode 0x01
+    expect(clientFrame[1] & 0x80).toBe(0x80); // Mask bit 1
+    const maskKey = clientFrame.subarray(2, 6);
+    expect(maskKey.length).toBe(4);
+
+    const maskedPayload = Buffer.from(clientFrame.subarray(6));
+    for (let i = 0; i < maskedPayload.length; i++) {
+      maskedPayload[i] ^= maskKey[i % 4];
+    }
+    expect(maskedPayload.toString('utf-8')).toBe(text);
+  });
+
+  it('decodes incoming frames in LocalWsConnection', () => {
+    const mockSocket = Object.assign(new EventEmitter(), {
+      write: vi.fn(),
+      end: vi.fn(),
+      destroy: vi.fn(),
+      destroyed: false,
+    });
+
+    const conn = new LocalWsConnection(mockSocket as any, false);
+    let receivedMessage = '';
+
+    conn.on('message', (msg: string) => {
+      receivedMessage = msg;
+    });
+
+    // Send a frame into socket
+    const frame = encodeFrame('test payload', false, false);
+    mockSocket.emit('data', frame);
+
+    expect(receivedMessage).toBe('test payload');
+    conn.close();
   });
 });

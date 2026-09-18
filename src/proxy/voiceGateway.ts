@@ -1,12 +1,14 @@
 /**
  * Real-time Bidirectional Voice Gateway for Antigravity.
- * Proxies local WebSocket connections to Google Multimodal Live API (BidiGenerateContent).
+ * Proxies local WebSocket connections strictly to Google Cloud Vertex AI (LlmBidiService / BidiGenerateContent).
  * Supports PCM 16-bit 24kHz bidirectional streaming with barge-in interruption.
- * Built with zero external dependencies using Node.js native sockets & Node 22 WebSocket.
+ * Built with zero external dependencies using Node.js native HTTPS/TLS and RFC-6455 framing.
  */
 
 import * as http from 'http';
+import * as https from 'https';
 import * as net from 'net';
+import * as tls from 'tls';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -14,17 +16,25 @@ import { EventEmitter } from 'events';
 import log from 'electron-log';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
-const GEMINI_LIVE_HOST = 'generativelanguage.googleapis.com';
-const GEMINI_LIVE_PATH = '/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent';
-const DEFAULT_MODEL = 'models/gemini-2.0-flash-exp';
-const DEFAULT_VOICE = 'Puck';
+export const DEFAULT_LOCATION = 'us-central1';
+export const DEFAULT_MODEL = 'gemini-2.0-flash';
+export const DEFAULT_VOICE = 'Puck';
+export const VERTEX_BIDI_PATH = '/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent';
+
+export interface VoiceConfig {
+  projectId?: string;
+  location?: string;
+  token?: string;
+  voice?: string;
+  model?: string;
+}
 
 function getVoiceConfigPath(): string {
   const home = process.env.HOME || process.env.USERPROFILE || '';
   return path.join(home, '.gemini', 'antigravity', 'voice_config.json');
 }
 
-export function loadVoiceConfig(): { apiKey?: string; voice?: string; model?: string } {
+export function loadVoiceConfig(): VoiceConfig {
   try {
     const p = getVoiceConfigPath();
     if (fs.existsSync(p)) {
@@ -34,7 +44,7 @@ export function loadVoiceConfig(): { apiKey?: string; voice?: string; model?: st
   return {};
 }
 
-export function saveVoiceConfig(config: { apiKey?: string; voice?: string; model?: string }): void {
+export function saveVoiceConfig(config: VoiceConfig): void {
   try {
     const p = getVoiceConfigPath();
     fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -49,20 +59,24 @@ export interface VoiceGatewayOptions {
   getApiKey: () => string | null;
   defaultVoice?: string;
   defaultModel?: string;
+  defaultLocation?: string;
   systemInstruction?: string;
 }
 
 /**
- * Lightweight RFC-6455 WebSocket connection over a raw net.Socket.
+ * Lightweight RFC-6455 WebSocket connection over a net.Socket / tls.TLSSocket.
+ * Supports both server mode (incoming from frontend) and client mode (outgoing to Vertex AI).
  */
-class LocalWsConnection extends EventEmitter {
-  public socket: net.Socket;
+export class LocalWsConnection extends EventEmitter {
+  public socket: net.Socket | tls.TLSSocket;
   public readyState: number = 1; // 1 = OPEN
+  public isClient: boolean = false;
   private buffer: Buffer = Buffer.alloc(0);
 
-  constructor(socket: net.Socket) {
+  constructor(socket: net.Socket | tls.TLSSocket, isClient: boolean = false) {
     super();
     this.socket = socket;
+    this.isClient = isClient;
 
     this.socket.on('data', (chunk: Buffer) => {
       this.buffer = Buffer.concat([this.buffer, chunk]);
@@ -83,7 +97,7 @@ class LocalWsConnection extends EventEmitter {
   public send(data: string | Buffer): void {
     if (this.readyState !== 1 || this.socket.destroyed) return;
     const isBinary = Buffer.isBuffer(data);
-    const frame = encodeFrame(data, isBinary);
+    const frame = encodeFrame(data, isBinary, this.isClient);
     this.socket.write(frame);
   }
 
@@ -95,7 +109,7 @@ class LocalWsConnection extends EventEmitter {
       const payload = Buffer.alloc(2 + reasonBuf.length);
       payload.writeUInt16BE(code, 0);
       reasonBuf.copy(payload, 2);
-      this.socket.write(encodeFrame(payload, true, 0x08));
+      this.socket.write(encodeFrame(payload, true, this.isClient, 0x08));
     } catch (_) {}
     this.socket.end();
     this.readyState = 3;
@@ -133,7 +147,7 @@ class LocalWsConnection extends EventEmitter {
       const payload = Buffer.from(this.buffer.subarray(offset, offset + payloadLen));
       this.buffer = this.buffer.subarray(offset + payloadLen);
 
-      // Unmask client payload
+      // Unmask payload if masked
       if (maskKey) {
         for (let i = 0; i < payload.length; i++) {
           payload[i] ^= maskKey[i % 4];
@@ -143,12 +157,18 @@ class LocalWsConnection extends EventEmitter {
       // Handle Opcodes
       if (opcode === 0x08) {
         // Close frame
-        this.emit('close');
-        this.close();
+        let code = 1000;
+        let reason = '';
+        if (payload.length >= 2) {
+          code = payload.readUInt16BE(0);
+          reason = payload.subarray(2).toString('utf-8');
+        }
+        this.emit('close', code, reason);
+        this.close(code, reason);
         return;
       } else if (opcode === 0x09) {
         // Ping -> Reply Pong
-        this.socket.write(encodeFrame(payload, true, 0x0a));
+        this.socket.write(encodeFrame(payload, true, this.isClient, 0x0a));
       } else if (opcode === 0x01) {
         // Text frame
         this.emit('message', payload.toString('utf-8'), false);
@@ -160,27 +180,42 @@ class LocalWsConnection extends EventEmitter {
   }
 }
 
-function encodeFrame(data: Buffer | string, isBinary: boolean, customOpcode?: number): Buffer {
+export function encodeFrame(
+  data: Buffer | string,
+  isBinary: boolean,
+  isClient: boolean = false,
+  customOpcode?: number,
+): Buffer {
   const payload = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf-8');
   const len = payload.length;
   const opcode = customOpcode !== undefined ? customOpcode : isBinary ? 0x02 : 0x01;
   const firstByte = 0x80 | opcode; // FIN = 1
+  const maskBit = isClient ? 0x80 : 0x00;
 
   let header: Buffer;
   if (len < 126) {
     header = Buffer.alloc(2);
     header[0] = firstByte;
-    header[1] = len;
+    header[1] = maskBit | len;
   } else if (len <= 0xffff) {
     header = Buffer.alloc(4);
     header[0] = firstByte;
-    header[1] = 126;
+    header[1] = maskBit | 126;
     header.writeUInt16BE(len, 2);
   } else {
     header = Buffer.alloc(10);
     header[0] = firstByte;
-    header[1] = 127;
+    header[1] = maskBit | 127;
     header.writeBigUInt64BE(BigInt(len), 2);
+  }
+
+  if (isClient) {
+    const maskKey = crypto.randomBytes(4);
+    const masked = Buffer.alloc(len);
+    for (let i = 0; i < len; i++) {
+      masked[i] = payload[i] ^ maskKey[i % 4];
+    }
+    return Buffer.concat([header, maskKey, masked]);
   }
 
   return Buffer.concat([header, payload]);
@@ -190,16 +225,33 @@ export class VoiceGateway {
   private getApiKey: () => string | null;
   private defaultVoice: string;
   private defaultModel: string;
+  private defaultLocation: string;
   private systemInstruction: string;
   private activeClients: Set<LocalWsConnection> = new Set();
+  private activeGcpContext: { projectId?: string; token?: string } = {};
 
   constructor(options: VoiceGatewayOptions) {
     this.getApiKey = options.getApiKey;
     this.defaultVoice = options.defaultVoice || DEFAULT_VOICE;
     this.defaultModel = options.defaultModel || DEFAULT_MODEL;
+    this.defaultLocation = options.defaultLocation || DEFAULT_LOCATION;
     this.systemInstruction =
       options.systemInstruction ||
       'You are Antigravity\'s real-time AI pair programmer. You are sharp, concise, friendly, and speak naturally. Provide quick, accurate, conversational answers suitable for spoken audio without markdown tables or code formatting.';
+  }
+
+  public setActiveGcpContext(ctx: { projectId?: string; token?: string }): void {
+    if (ctx.projectId) this.activeGcpContext.projectId = ctx.projectId;
+    if (ctx.token) this.activeGcpContext.token = ctx.token;
+    log.info(
+      `[VoiceGateway] Active GCP context updated: project=${this.activeGcpContext.projectId}, hasToken=${Boolean(
+        this.activeGcpContext.token,
+      )}`,
+    );
+  }
+
+  public getActiveGcpContext(): { projectId?: string; token?: string } {
+    return { ...this.activeGcpContext };
   }
 
   public handleUpgrade(req: http.IncomingMessage, socket: net.Socket, _head: Buffer): boolean {
@@ -229,15 +281,18 @@ export class VoiceGateway {
 
     socket.write(responseHeaders.join('\r\n'));
 
-    const clientWs = new LocalWsConnection(socket);
+    const clientWs = new LocalWsConnection(socket, false);
     this.activeClients.add(clientWs);
 
     clientWs.on('close', () => {
       this.activeClients.delete(clientWs);
     });
 
-    const customKey = url.searchParams.get('key');
-    this.handleClientSession(clientWs, customKey || undefined);
+    const explicitToken = url.searchParams.get('token') || url.searchParams.get('key') || undefined;
+    const explicitProject = url.searchParams.get('project') || undefined;
+    const explicitLocation = url.searchParams.get('location') || undefined;
+
+    this.handleClientSession(clientWs, explicitToken, explicitProject, explicitLocation);
     return true;
   }
 
@@ -250,50 +305,136 @@ export class VoiceGateway {
     this.activeClients.clear();
   }
 
-  private handleClientSession(clientWs: LocalWsConnection, explicitKey?: string): void {
+  private handleClientSession(
+    clientWs: LocalWsConnection,
+    explicitToken?: string,
+    explicitProject?: string,
+    explicitLocation?: string,
+  ): void {
     const voiceCfg = loadVoiceConfig();
-    const apiKey = explicitKey || voiceCfg.apiKey || this.getApiKey();
-    if (!apiKey) {
-      log.warn('[VoiceGateway] Connection rejected: No Google API key configured.');
+
+    const rawToken =
+      explicitToken ||
+      voiceCfg.token ||
+      this.activeGcpContext.token ||
+      this.getApiKey() ||
+      process.env.GEMINI_API_KEY ||
+      process.env.GOOGLE_API_KEY;
+
+    const cleanToken = rawToken ? rawToken.replace(/^Bearer\s+/i, '').trim() : '';
+
+    const projectId =
+      explicitProject ||
+      voiceCfg.projectId ||
+      this.activeGcpContext.projectId ||
+      process.env.GOOGLE_CLOUD_PROJECT ||
+      process.env.GCP_PROJECT ||
+      process.env.PROJECT_ID ||
+      '';
+
+    const location = explicitLocation || voiceCfg.location || this.defaultLocation;
+    const model = voiceCfg.model || this.defaultModel;
+    const voice = voiceCfg.voice || this.defaultVoice;
+
+    if (!cleanToken) {
+      log.warn('[VoiceGateway] Connection rejected: No Bearer / OAuth token configured.');
       clientWs.send(
         JSON.stringify({
           type: 'error',
           code: 1008,
-          error: 'No Google API key configured. Please enter your Google AI Studio API key (starts with AIzaSy) in the Live Voice Console.',
+          error:
+            'No Google Cloud token found. Please configure your GCP OAuth Bearer Token in the Live Voice Debug Console.',
         }),
       );
-      clientWs.close(1008, 'API Key Missing');
+      clientWs.close(1008, 'Token Missing');
       return;
     }
 
-    const upstreamUrl = `wss://${GEMINI_LIVE_HOST}${GEMINI_LIVE_PATH}?key=${encodeURIComponent(apiKey)}`;
-    let upstreamWs: WebSocket | null = null;
+    const host = `${location}-aiplatform.googleapis.com`;
+    const path = VERTEX_BIDI_PATH;
+    const secKey = crypto.randomBytes(16).toString('base64');
+
+    log.info(
+      `[VoiceGateway] Connecting upstream to Vertex AI: wss://${host}${path} (project: ${projectId || 'unspecified'}, location: ${location})`,
+    );
+
+    let upstreamWs: LocalWsConnection | null = null;
     let upstreamReady = false;
     const pendingAudioQueue: Buffer[] = [];
 
-    try {
-      upstreamWs = new (globalThis as any).WebSocket(upstreamUrl);
-    } catch (err: any) {
-      log.error('[VoiceGateway] Failed to instantiate upstream WebSocket:', err);
-      clientWs.send(JSON.stringify({ type: 'error', error: err.message || 'Connection failed' }));
-      clientWs.close(1011, 'Upstream Error');
-      return;
-    }
+    const req = https.request({
+      hostname: host,
+      port: 443,
+      path: path,
+      method: 'GET',
+      headers: {
+        Host: host,
+        Upgrade: 'websocket',
+        Connection: 'Upgrade',
+        'Sec-WebSocket-Key': secKey,
+        'Sec-WebSocket-Version': '13',
+        Authorization: `Bearer ${cleanToken}`,
+      },
+    });
 
-    // ─── Upstream Handlers ──────────────────────────────────────────────────
+    req.on('response', (res) => {
+      let body = '';
+      res.on('data', (d: Buffer) => (body += d.toString('utf-8')));
+      res.on('end', () => {
+        log.error(`[VoiceGateway] Vertex AI handshake rejected (HTTP ${res.statusCode} ${res.statusMessage}): ${body}`);
+        let friendly = `Vertex AI Error (HTTP ${res.statusCode}): ${res.statusMessage}`;
+        try {
+          const json = JSON.parse(body);
+          if (json.error && json.error.message) {
+            friendly = `Vertex AI: ${json.error.message}`;
+          }
+        } catch (_) {}
 
-    upstreamWs.onopen = () => {
-      log.info('[VoiceGateway] Connected to Gemini Multimodal Live API upstream.');
+        if (clientWs.readyState === 1) {
+          clientWs.send(
+            JSON.stringify({
+              type: 'error',
+              code: res.statusCode || 1011,
+              error: friendly,
+              raw: body,
+            }),
+          );
+          clientWs.close(1011, 'Upstream Handshake Failed');
+        }
+      });
+    });
+
+    req.on('error', (err) => {
+      log.error('[VoiceGateway] Upstream request error:', err);
+      if (clientWs.readyState === 1) {
+        clientWs.send(
+          JSON.stringify({
+            type: 'error',
+            error: `Failed to connect to Vertex AI (${host}): ${err.message}`,
+          }),
+        );
+        clientWs.close(1011, 'Network Error');
+      }
+    });
+
+    req.on('upgrade', (_res, rawSocket, _head) => {
+      log.info(`[VoiceGateway] Vertex AI WebSocket upgrade successful. Initializing session...`);
+      upstreamWs = new LocalWsConnection(rawSocket as tls.TLSSocket, true);
+
+      // Construct model string
+      const modelPath = projectId
+        ? `projects/${projectId}/locations/${location}/publishers/google/models/${model}`
+        : `publishers/google/models/${model}`;
 
       const setupMessage = {
         setup: {
-          model: this.defaultModel,
+          model: modelPath,
           generationConfig: {
             responseModalities: ['AUDIO'],
             speechConfig: {
               voiceConfig: {
                 prebuiltVoiceConfig: {
-                  voiceName: this.defaultVoice,
+                  voiceName: voice,
                 },
               },
             },
@@ -304,106 +445,120 @@ export class VoiceGateway {
         },
       };
 
-      upstreamWs?.send(JSON.stringify(setupMessage));
-    };
+      log.info(`[VoiceGateway] Sending Vertex AI setup frame for model: ${modelPath}`);
+      upstreamWs.send(JSON.stringify(setupMessage));
 
-    upstreamWs.onmessage = (event: any) => {
-      try {
-        const raw = typeof event.data === 'string' ? event.data : event.data.toString('utf-8');
-        const parsed = JSON.parse(raw);
+      upstreamWs.on('message', (data: string | Buffer) => {
+        try {
+          const raw = typeof data === 'string' ? data : data.toString('utf-8');
+          const parsed = JSON.parse(raw);
 
-        if (parsed.setupComplete) {
-          log.info('[VoiceGateway] Upstream setup complete. Ready for audio streaming.');
-          upstreamReady = true;
+          if (parsed.setupComplete) {
+            log.info('[VoiceGateway] Vertex AI setup complete. Audio stream ready.');
+            upstreamReady = true;
 
-          while (pendingAudioQueue.length > 0) {
-            const chunk = pendingAudioQueue.shift();
-            if (chunk && upstreamWs?.readyState === (globalThis as any).WebSocket.OPEN) {
-              this.sendAudioChunkToUpstream(upstreamWs, chunk);
+            while (pendingAudioQueue.length > 0) {
+              const chunk = pendingAudioQueue.shift();
+              if (chunk && upstreamWs?.readyState === 1) {
+                this.sendAudioChunkToUpstream(upstreamWs, chunk);
+              }
+            }
+
+            clientWs.send(
+              JSON.stringify({
+                type: 'ready',
+                model,
+                voice,
+                location,
+                projectId,
+              }),
+            );
+            return;
+          }
+
+          if (parsed.serverContent) {
+            const sc = parsed.serverContent;
+
+            if (sc.interrupted) {
+              log.info('[VoiceGateway] Model speech interrupted by barge-in.');
+              clientWs.send(JSON.stringify({ type: 'interrupted' }));
+            }
+
+            if (sc.modelTurn && Array.isArray(sc.modelTurn.parts)) {
+              for (const part of sc.modelTurn.parts) {
+                if (part.inlineData && part.inlineData.data) {
+                  clientWs.send(
+                    JSON.stringify({
+                      type: 'audio',
+                      data: part.inlineData.data,
+                      mimeType: part.inlineData.mimeType || 'audio/pcm;rate=24000',
+                    }),
+                  );
+                }
+                if (part.text) {
+                  clientWs.send(JSON.stringify({ type: 'text', text: part.text }));
+                }
+              }
+            }
+
+            if (sc.turnComplete) {
+              clientWs.send(JSON.stringify({ type: 'turn_complete' }));
             }
           }
 
+          if (parsed.error) {
+            log.error('[VoiceGateway] Vertex AI returned error frame:', parsed.error);
+            clientWs.send(
+              JSON.stringify({
+                type: 'error',
+                error: parsed.error.message || 'Vertex AI error',
+                details: parsed.error,
+              }),
+            );
+          }
+        } catch (err) {
+          log.error('[VoiceGateway] Error parsing upstream message:', err);
+        }
+      });
+
+      upstreamWs.on('close', (code?: number, reason?: string) => {
+        const c = code || 1000;
+        const r = reason || '';
+        log.warn(`[VoiceGateway] Vertex AI WebSocket closed: code=${c}, reason="${r}"`);
+        if (clientWs.readyState === 1) {
           clientWs.send(
             JSON.stringify({
-              type: 'ready',
-              model: this.defaultModel,
-              voice: this.defaultVoice,
+              type: 'closed',
+              code: c,
+              reason: r,
             }),
           );
-          return;
+          clientWs.close(c, r);
         }
+      });
 
-        if (parsed.serverContent) {
-          const sc = parsed.serverContent;
-
-          if (sc.interrupted) {
-            log.info('[VoiceGateway] Model speech interrupted by barge-in.');
-            clientWs.send(JSON.stringify({ type: 'interrupted' }));
-          }
-
-          if (sc.modelTurn && Array.isArray(sc.modelTurn.parts)) {
-            for (const part of sc.modelTurn.parts) {
-              if (part.inlineData && part.inlineData.data) {
-                clientWs.send(
-                  JSON.stringify({
-                    type: 'audio',
-                    data: part.inlineData.data,
-                    mimeType: part.inlineData.mimeType || 'audio/pcm;rate=24000',
-                  }),
-                );
-              }
-              if (part.text) {
-                clientWs.send(JSON.stringify({ type: 'text', text: part.text }));
-              }
-            }
-          }
-
-          if (sc.turnComplete) {
-            clientWs.send(JSON.stringify({ type: 'turn_complete' }));
-          }
+      upstreamWs.on('error', (err) => {
+        log.error('[VoiceGateway] Vertex AI WebSocket socket error:', err);
+        if (clientWs.readyState === 1) {
+          clientWs.send(
+            JSON.stringify({
+              type: 'error',
+              error: err.message || 'Vertex AI socket error',
+            }),
+          );
         }
-      } catch (err) {
-        log.error('[VoiceGateway] Error parsing upstream message:', err);
-      }
-    };
+      });
+    });
 
-    upstreamWs.onerror = (err: any) => {
-      log.error('[VoiceGateway] Upstream WebSocket error:', err);
-      if (clientWs.readyState === 1) {
-        clientWs.send(JSON.stringify({ type: 'error', error: err?.message || 'Upstream connection error' }));
-      }
-    };
+    req.end();
 
-    upstreamWs.onclose = (event: any) => {
-      const code = event?.code || 1000;
-      const rawReason = (event?.reason || '').toString();
-      log.warn(`[VoiceGateway] Upstream closed: code=${code}, reason="${rawReason}"`);
-
-      let friendlyError = rawReason || `Upstream closed with code ${code}`;
-      if (code === 1008) {
-        friendlyError = `Google Live API Blocked (1008): "${rawReason}". Cause: Your Google API key is restricted or Generative Language API is disabled. Please verify your Google AI Studio API key.`;
-      }
-
-      if (clientWs.readyState === 1) {
-        clientWs.send(
-          JSON.stringify({
-            type: 'error',
-            code,
-            error: friendlyError,
-            rawReason,
-          }),
-        );
-        clientWs.close(code, rawReason);
-      }
-    };
-
-    // ─── Client Handlers ────────────────────────────────────────────────────
+    // ─── Client Message Handlers ──────────────────────────────────────────
 
     clientWs.on('message', (message: string | Buffer, isBinary: boolean) => {
       try {
         if (isBinary || Buffer.isBuffer(message)) {
           const buf = Buffer.isBuffer(message) ? message : Buffer.from(message);
-          if (!upstreamReady || upstreamWs?.readyState !== (globalThis as any).WebSocket.OPEN) {
+          if (!upstreamReady || !upstreamWs || upstreamWs.readyState !== 1) {
             if (pendingAudioQueue.length < 25) pendingAudioQueue.push(buf);
             return;
           }
@@ -415,20 +570,22 @@ export class VoiceGateway {
               JSON.stringify({
                 type: 'pong',
                 timestamp: Date.now(),
-                hasApiKey: Boolean(apiKey),
+                hasToken: Boolean(cleanToken),
+                projectId: projectId || null,
+                location,
                 upstreamReady,
-                upstreamState: upstreamWs ? (upstreamWs as any).readyState : -1,
+                upstreamState: upstreamWs ? upstreamWs.readyState : -1,
               }),
             );
           } else if (parsed.type === 'audio' && parsed.data) {
             const buf = Buffer.from(parsed.data, 'base64');
-            if (!upstreamReady || upstreamWs?.readyState !== (globalThis as any).WebSocket.OPEN) {
+            if (!upstreamReady || !upstreamWs || upstreamWs.readyState !== 1) {
               if (pendingAudioQueue.length < 25) pendingAudioQueue.push(buf);
               return;
             }
             this.sendAudioChunkToUpstream(upstreamWs, buf);
           } else if (parsed.type === 'text' && parsed.text) {
-            if (upstreamWs?.readyState === (globalThis as any).WebSocket.OPEN) {
+            if (upstreamWs && upstreamWs.readyState === 1) {
               upstreamWs.send(
                 JSON.stringify({
                   clientContent: {
@@ -445,10 +602,16 @@ export class VoiceGateway {
             }
           } else if (parsed.type === 'interrupt') {
             log.info('[VoiceGateway] Client requested interrupt.');
-          } else if (parsed.type === 'save_key' && parsed.apiKey) {
-            saveVoiceConfig({ apiKey: parsed.apiKey.trim() });
-            log.info('[VoiceGateway] Updated voice API key from client.');
-            clientWs.send(JSON.stringify({ type: 'key_saved', success: true }));
+          } else if (parsed.type === 'save_config') {
+            saveVoiceConfig({
+              projectId: parsed.projectId ? parsed.projectId.trim() : undefined,
+              location: parsed.location ? parsed.location.trim() : undefined,
+              token: parsed.token ? parsed.token.trim() : undefined,
+              model: parsed.model ? parsed.model.trim() : undefined,
+              voice: parsed.voice ? parsed.voice.trim() : undefined,
+            });
+            log.info('[VoiceGateway] Saved voice configuration.');
+            clientWs.send(JSON.stringify({ type: 'config_saved', success: true }));
           }
         }
       } catch (err) {
@@ -458,13 +621,13 @@ export class VoiceGateway {
 
     clientWs.on('close', () => {
       log.info('[VoiceGateway] Client disconnected.');
-      if (upstreamWs && upstreamWs.readyState === (globalThis as any).WebSocket.OPEN) {
+      if (upstreamWs && upstreamWs.readyState === 1) {
         upstreamWs.close(1000, 'Client disconnected');
       }
     });
   }
 
-  private sendAudioChunkToUpstream(ws: WebSocket, pcmBuffer: Buffer): void {
+  private sendAudioChunkToUpstream(ws: LocalWsConnection, pcmBuffer: Buffer): void {
     const message = {
       realtimeInput: {
         mediaChunks: [

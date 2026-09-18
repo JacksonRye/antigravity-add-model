@@ -1133,6 +1133,11 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
 
     log.info(`[Proxy] Request: ${req.method} ${req.url}`);
 
+    const incomingAuth = (req.headers['authorization'] || req.headers['Authorization']) as string | undefined;
+    if (incomingAuth && voiceGateway) {
+      voiceGateway.setActiveGcpContext({ token: incomingAuth });
+    }
+
     // 0. Intercept GetAvailableModels (redirected from Electron webRequest)
     if (req.url!.startsWith('/GetAvailableModels')) {
       const gavParsed = new URL(req.url!, 'http://127.0.0.1');
@@ -1501,6 +1506,9 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         log.info(
           `[Proxy] Cloud Code generation request model: ${modelName}, modelId: ${modelId}, url: ${req.url}, bodyKeys: ${Object.keys(reqJson).join(',')}`,
         );
+        if (reqJson.project && typeof reqJson.project === 'string' && voiceGateway) {
+          voiceGateway.setActiveGcpContext({ projectId: reqJson.project });
+        }
         if (modelName) {
           const customModels = loadCustomModels();
           const matchedCustomModel = customModels.find((m) => {

@@ -1160,7 +1160,7 @@ window.addEventListener('DOMContentLoaded', () => {
         drawer.innerHTML = `
       <div class="agy-console-header">
         <div class="agy-console-title">
-          <span>🎙️ Live Voice Debug Console</span>
+          <span>🎙️ Vertex AI Live Voice Console</span>
           <span id="agy-console-status" class="agy-console-status-pill">Idle</span>
         </div>
         <div style="display:flex;align-items:center;gap:6px;">
@@ -1170,7 +1170,7 @@ window.addEventListener('DOMContentLoaded', () => {
       </div>
       <div class="agy-console-actions">
         <button id="agy-btn-test-mic" class="agy-btn-action highlight">Test Mic (5s)</button>
-        <button id="agy-btn-test-gw" class="agy-btn-action">Test Gateway</button>
+        <button id="agy-btn-test-gw" class="agy-btn-action">Test Vertex AI</button>
         <button id="agy-btn-copy-logs" class="agy-btn-action">Copy Logs</button>
         <button id="agy-btn-clear-logs" class="agy-btn-action">Clear</button>
       </div>
@@ -1180,9 +1180,13 @@ window.addEventListener('DOMContentLoaded', () => {
           <div class="agy-meter-outer"><div id="agy-mic-meter-inner" class="agy-meter-inner"></div></div>
           <span id="agy-meter-val">0%</span>
         </div>
-        <div class="agy-config-input-row">
-          <input id="agy-api-key-input" class="agy-config-input" type="password" placeholder="Enter Google AI Studio Key (AIzaSy...) to override" />
-          <button id="agy-btn-save-key" class="agy-btn-action">Save & Test</button>
+        <div class="agy-config-input-row" style="margin-top:4px;">
+          <input id="agy-project-input" class="agy-config-input" style="flex:1;" placeholder="GCP Project ID (e.g. my-project-id)" />
+          <input id="agy-region-input" class="agy-config-input" style="width:100px;" placeholder="Region" value="us-central1" />
+        </div>
+        <div class="agy-config-input-row" style="margin-top:4px;">
+          <input id="agy-token-input" class="agy-config-input" style="flex:1;" type="password" placeholder="GCP Bearer / OAuth Token (ya29... or AQ...)" />
+          <button id="agy-btn-save-config" class="agy-btn-action highlight">Save & Connect</button>
         </div>
       </div>
       <div id="agy-console-logs-window" class="agy-logs-window"></div>
@@ -1192,12 +1196,20 @@ window.addEventListener('DOMContentLoaded', () => {
         const statusPill = drawer.querySelector('#agy-console-status');
         const meterInner = drawer.querySelector('#agy-mic-meter-inner');
         const meterVal = drawer.querySelector('#agy-meter-val');
-        const apiKeyInput = drawer.querySelector('#agy-api-key-input');
-        // Restore cached key if present
+        const projectInput = drawer.querySelector('#agy-project-input');
+        const regionInput = drawer.querySelector('#agy-region-input');
+        const tokenInput = drawer.querySelector('#agy-token-input');
+        // Restore cached Vertex AI config
         try {
-            const savedKey = localStorage.getItem('agy_voice_custom_key');
-            if (savedKey)
-                apiKeyInput.value = savedKey;
+            const savedToken = localStorage.getItem('agy_voice_token') || localStorage.getItem('agy_voice_custom_key');
+            if (savedToken && tokenInput)
+                tokenInput.value = savedToken;
+            const savedProject = localStorage.getItem('agy_voice_project');
+            if (savedProject && projectInput)
+                projectInput.value = savedProject;
+            const savedRegion = localStorage.getItem('agy_voice_region');
+            if (savedRegion && regionInput)
+                regionInput.value = savedRegion;
         }
         catch (_) { }
         // Internal Logging
@@ -1260,20 +1272,40 @@ window.addEventListener('DOMContentLoaded', () => {
                 logMsg('CLIPBOARD', 'Copy failed: ' + err.message, 'error');
             }
         });
-        // Save key button
-        drawer.querySelector('#agy-btn-save-key')?.addEventListener('click', () => {
-            const val = apiKeyInput.value.trim();
-            if (!val) {
-                logMsg('CONFIG', 'Please enter a valid key.', 'error');
-                return;
-            }
+        function buildGatewayUrl() {
+            const token = (tokenInput?.value || '').trim() ||
+                localStorage.getItem('agy_voice_token') ||
+                localStorage.getItem('agy_voice_custom_key') ||
+                '';
+            const project = (projectInput?.value || '').trim() || localStorage.getItem('agy_voice_project') || '';
+            const region = (regionInput?.value || '').trim() || localStorage.getItem('agy_voice_region') || 'us-central1';
+            const params = new URLSearchParams();
+            if (token)
+                params.set('token', token);
+            if (project)
+                params.set('project', project);
+            if (region)
+                params.set('location', region);
+            const q = params.toString();
+            return q ? `ws://127.0.0.1:50999/ws/live?${q}` : 'ws://127.0.0.1:50999/ws/live';
+        }
+        // Save config button
+        drawer.querySelector('#agy-btn-save-config')?.addEventListener('click', () => {
+            const token = (tokenInput?.value || '').trim();
+            const project = (projectInput?.value || '').trim();
+            const region = (regionInput?.value || 'us-central1').trim();
             try {
-                localStorage.setItem('agy_voice_custom_key', val);
-                logMsg('CONFIG', `Voice API key saved locally (${val.slice(0, 7)}...). Testing gateway...`, 'success');
-                testGatewayConnection(val);
+                if (token)
+                    localStorage.setItem('agy_voice_token', token);
+                if (project)
+                    localStorage.setItem('agy_voice_project', project);
+                if (region)
+                    localStorage.setItem('agy_voice_region', region);
+                logMsg('CONFIG', `Saved Vertex AI settings: project=${project || 'auto'}, region=${region}. Testing gateway...`, 'success');
+                testGatewayConnection();
             }
             catch (e) {
-                logMsg('CONFIG', 'Failed to save key: ' + e.message, 'error');
+                logMsg('CONFIG', 'Failed to save config: ' + e.message, 'error');
             }
         });
         // ─── Diagnostic Tests ───────────────────────────────────────────────────
@@ -1331,14 +1363,13 @@ window.addEventListener('DOMContentLoaded', () => {
             }
         }
         drawer.querySelector('#agy-btn-test-mic')?.addEventListener('click', runMicTest);
-        function testGatewayConnection(explicitKey) {
-            logMsg('GW-TEST', 'Testing connection to ws://127.0.0.1:50999/ws/live...', 'ws');
-            const key = explicitKey || apiKeyInput.value.trim() || localStorage.getItem('agy_voice_custom_key') || '';
-            const url = key ? `ws://127.0.0.1:50999/ws/live?key=${encodeURIComponent(key)}` : 'ws://127.0.0.1:50999/ws/live';
+        function testGatewayConnection() {
+            const url = buildGatewayUrl();
+            logMsg('GW-TEST', `Testing connection to ${url.split('?')[0]}...`, 'ws');
             const testWs = new WebSocket(url);
             const start = Date.now();
             testWs.onopen = () => {
-                logMsg('GW-TEST', `Connected to local proxy in ${Date.now() - start}ms. Waiting for upstream handshake...`, 'success');
+                logMsg('GW-TEST', `Connected to local proxy in ${Date.now() - start}ms. Waiting for Vertex AI upstream handshake...`, 'success');
                 testWs.send(JSON.stringify({ type: 'ping' }));
             };
             testWs.onmessage = (e) => {
@@ -1346,7 +1377,7 @@ window.addEventListener('DOMContentLoaded', () => {
                 try {
                     const parsed = JSON.parse(e.data);
                     if (parsed.type === 'ready') {
-                        logMsg('GW-TEST', `Upstream Google Multimodal Live API READY! Model: ${parsed.model}, Voice: ${parsed.voice}`, 'success');
+                        logMsg('GW-TEST', `Vertex AI Live API READY! Model: ${parsed.model}, Voice: ${parsed.voice}, Region: ${parsed.location}`, 'success');
                     }
                     else if (parsed.type === 'error') {
                         logMsg('GW-TEST', `Gateway error: ${parsed.error}`, 'error');
@@ -1475,20 +1506,19 @@ window.addEventListener('DOMContentLoaded', () => {
                 });
                 logMsg('MIC', 'Microphone stream acquired successfully.', 'success');
                 // Connect to local proxy VoiceGateway
-                const key = apiKeyInput.value.trim() || localStorage.getItem('agy_voice_custom_key') || '';
-                const wsUrl = key ? `ws://127.0.0.1:50999/ws/live?key=${encodeURIComponent(key)}` : 'ws://127.0.0.1:50999/ws/live';
+                const wsUrl = buildGatewayUrl();
                 logMsg('WS', `Connecting to Voice Gateway (${wsUrl.split('?')[0]})...`, 'ws');
                 ws = new WebSocket(wsUrl);
                 ws.binaryType = 'arraybuffer';
                 ws.onopen = () => {
-                    logMsg('WS', 'Connected to local proxy. Handshaking with Google Gemini Live API...', 'ws');
-                    updateUiState('connecting', 'Handshaking with Gemini Live...');
+                    logMsg('WS', 'Connected to local proxy. Handshaking with Vertex AI upstream...', 'ws');
+                    updateUiState('connecting', 'Connecting to Vertex AI...');
                 };
                 ws.onmessage = (event) => {
                     try {
                         const msg = JSON.parse(event.data);
                         if (msg.type === 'ready') {
-                            logMsg('UPSTREAM', `Gemini Multimodal Live ready! Voice: ${msg.voice}, Model: ${msg.model}`, 'success');
+                            logMsg('UPSTREAM', `Vertex AI Live session READY! Voice: ${msg.voice}, Model: ${msg.model}, Region: ${msg.location}`, 'success');
                             updateUiState('listening');
                             startMicAudioPipeline();
                         }
@@ -1513,10 +1543,7 @@ window.addEventListener('DOMContentLoaded', () => {
                         }
                         else if (msg.type === 'closed') {
                             logMsg('WS', `Upstream closed (code: ${msg.code}, reason: "${msg.reason}")`, msg.code === 1000 ? 'info' : 'error');
-                            if (msg.code === 1008) {
-                                logMsg('DIAGNOSIS', 'Code 1008 indicates your Google API key has restrictions or Generative Language API is disabled. Paste an unrestricted Google AI Studio API key in the console above.', 'error');
-                                toggleDrawer(true);
-                            }
+                            toggleDrawer(true);
                         }
                     }
                     catch (e) {
