@@ -6,6 +6,16 @@
  */
 import * as http from 'http';
 import * as net from 'net';
+export declare function loadVoiceConfig(): {
+    apiKey?: string;
+    voice?: string;
+    model?: string;
+};
+export declare function saveVoiceConfig(config: {
+    apiKey?: string;
+    voice?: string;
+    model?: string;
+}): void;
 export interface VoiceGatewayOptions {
     getApiKey: () => string | null;
     defaultVoice?: string;

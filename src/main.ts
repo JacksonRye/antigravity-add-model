@@ -165,6 +165,19 @@ app
       callback({});
     });
 
+    // Grant media permissions for Live Voice microphone access
+    session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+      if (permission === 'media') {
+        callback(true);
+        return;
+      }
+      callback(false);
+    });
+
+    session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+      return permission === 'media';
+    });
+
     // Set About panel options with LS CL
     const cl = await getLsCL();
     app.setAboutPanelOptions({

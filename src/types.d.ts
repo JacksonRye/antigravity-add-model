@@ -263,6 +263,10 @@ declare module 'electron' {
       closeAllConnections(): Promise<void>;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setCertificateVerifyProc(proc: (request: any, callback: (verificationResult: number) => void) => void): void;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setPermissionRequestHandler(handler: (webContents: any, permission: string, callback: (permissionGranted: boolean) => void) => void): void;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setPermissionCheckHandler(handler: (webContents: any, permission: string) => boolean): void;
     };
   };
 

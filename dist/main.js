@@ -174,6 +174,17 @@ electron_1.app
         }
         callback({});
     });
+    // Grant media permissions for Live Voice microphone access
+    electron_1.session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+        if (permission === 'media') {
+            callback(true);
+            return;
+        }
+        callback(false);
+    });
+    electron_1.session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+        return permission === 'media';
+    });
     // Set About panel options with LS CL
     const cl = await (0, languageServer_1.getLsCL)();
     electron_1.app.setAboutPanelOptions({

@@ -8,6 +8,8 @@
 import * as http from 'http';
 import * as net from 'net';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import { EventEmitter } from 'events';
 import log from 'electron-log';
 
@@ -16,6 +18,32 @@ const GEMINI_LIVE_HOST = 'generativelanguage.googleapis.com';
 const GEMINI_LIVE_PATH = '/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent';
 const DEFAULT_MODEL = 'models/gemini-2.0-flash-exp';
 const DEFAULT_VOICE = 'Puck';
+
+function getVoiceConfigPath(): string {
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  return path.join(home, '.gemini', 'antigravity', 'voice_config.json');
+}
+
+export function loadVoiceConfig(): { apiKey?: string; voice?: string; model?: string } {
+  try {
+    const p = getVoiceConfigPath();
+    if (fs.existsSync(p)) {
+      return JSON.parse(fs.readFileSync(p, 'utf-8'));
+    }
+  } catch (_) {}
+  return {};
+}
+
+export function saveVoiceConfig(config: { apiKey?: string; voice?: string; model?: string }): void {
+  try {
+    const p = getVoiceConfigPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const existing = loadVoiceConfig();
+    fs.writeFileSync(p, JSON.stringify({ ...existing, ...config }, null, 2), 'utf-8');
+  } catch (err) {
+    log.error('[VoiceGateway] Failed to save voice config:', err);
+  }
+}
 
 export interface VoiceGatewayOptions {
   getApiKey: () => string | null;
@@ -208,7 +236,8 @@ export class VoiceGateway {
       this.activeClients.delete(clientWs);
     });
 
-    this.handleClientSession(clientWs);
+    const customKey = url.searchParams.get('key');
+    this.handleClientSession(clientWs, customKey || undefined);
     return true;
   }
 
@@ -221,14 +250,16 @@ export class VoiceGateway {
     this.activeClients.clear();
   }
 
-  private handleClientSession(clientWs: LocalWsConnection): void {
-    const apiKey = this.getApiKey();
+  private handleClientSession(clientWs: LocalWsConnection, explicitKey?: string): void {
+    const voiceCfg = loadVoiceConfig();
+    const apiKey = explicitKey || voiceCfg.apiKey || this.getApiKey();
     if (!apiKey) {
       log.warn('[VoiceGateway] Connection rejected: No Google API key configured.');
       clientWs.send(
         JSON.stringify({
           type: 'error',
-          error: 'No Google API key configured in custom models or environment.',
+          code: 1008,
+          error: 'No Google API key configured. Please enter your Google AI Studio API key (starts with AIzaSy) in the Live Voice Console.',
         }),
       );
       clientWs.close(1008, 'API Key Missing');
@@ -339,15 +370,30 @@ export class VoiceGateway {
     upstreamWs.onerror = (err: any) => {
       log.error('[VoiceGateway] Upstream WebSocket error:', err);
       if (clientWs.readyState === 1) {
-        clientWs.send(JSON.stringify({ type: 'error', error: err?.message || 'Upstream error' }));
+        clientWs.send(JSON.stringify({ type: 'error', error: err?.message || 'Upstream connection error' }));
       }
     };
 
     upstreamWs.onclose = (event: any) => {
-      log.info(`[VoiceGateway] Upstream closed: ${event?.code || 1000}`);
+      const code = event?.code || 1000;
+      const rawReason = (event?.reason || '').toString();
+      log.warn(`[VoiceGateway] Upstream closed: code=${code}, reason="${rawReason}"`);
+
+      let friendlyError = rawReason || `Upstream closed with code ${code}`;
+      if (code === 1008) {
+        friendlyError = `Google Live API Blocked (1008): "${rawReason}". Cause: Your Google API key is restricted or Generative Language API is disabled. Please verify your Google AI Studio API key.`;
+      }
+
       if (clientWs.readyState === 1) {
-        clientWs.send(JSON.stringify({ type: 'closed', code: event?.code, reason: event?.reason }));
-        clientWs.close(event?.code || 1000, event?.reason || 'Upstream closed');
+        clientWs.send(
+          JSON.stringify({
+            type: 'error',
+            code,
+            error: friendlyError,
+            rawReason,
+          }),
+        );
+        clientWs.close(code, rawReason);
       }
     };
 
@@ -364,7 +410,17 @@ export class VoiceGateway {
           this.sendAudioChunkToUpstream(upstreamWs, buf);
         } else {
           const parsed = JSON.parse(message.toString());
-          if (parsed.type === 'audio' && parsed.data) {
+          if (parsed.type === 'ping') {
+            clientWs.send(
+              JSON.stringify({
+                type: 'pong',
+                timestamp: Date.now(),
+                hasApiKey: Boolean(apiKey),
+                upstreamReady,
+                upstreamState: upstreamWs ? (upstreamWs as any).readyState : -1,
+              }),
+            );
+          } else if (parsed.type === 'audio' && parsed.data) {
             const buf = Buffer.from(parsed.data, 'base64');
             if (!upstreamReady || upstreamWs?.readyState !== (globalThis as any).WebSocket.OPEN) {
               if (pendingAudioQueue.length < 25) pendingAudioQueue.push(buf);
@@ -389,6 +445,10 @@ export class VoiceGateway {
             }
           } else if (parsed.type === 'interrupt') {
             log.info('[VoiceGateway] Client requested interrupt.');
+          } else if (parsed.type === 'save_key' && parsed.apiKey) {
+            saveVoiceConfig({ apiKey: parsed.apiKey.trim() });
+            log.info('[VoiceGateway] Updated voice API key from client.');
+            clientWs.send(JSON.stringify({ type: 'key_saved', success: true }));
           }
         }
       } catch (err) {

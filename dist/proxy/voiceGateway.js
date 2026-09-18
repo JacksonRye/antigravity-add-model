@@ -43,8 +43,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.VoiceGateway = void 0;
+exports.loadVoiceConfig = loadVoiceConfig;
+exports.saveVoiceConfig = saveVoiceConfig;
 exports.attachVoiceGateway = attachVoiceGateway;
 const crypto = __importStar(require("crypto"));
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
 const events_1 = require("events");
 const electron_log_1 = __importDefault(require("electron-log"));
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -52,6 +56,31 @@ const GEMINI_LIVE_HOST = 'generativelanguage.googleapis.com';
 const GEMINI_LIVE_PATH = '/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent';
 const DEFAULT_MODEL = 'models/gemini-2.0-flash-exp';
 const DEFAULT_VOICE = 'Puck';
+function getVoiceConfigPath() {
+    const home = process.env.HOME || process.env.USERPROFILE || '';
+    return path.join(home, '.gemini', 'antigravity', 'voice_config.json');
+}
+function loadVoiceConfig() {
+    try {
+        const p = getVoiceConfigPath();
+        if (fs.existsSync(p)) {
+            return JSON.parse(fs.readFileSync(p, 'utf-8'));
+        }
+    }
+    catch (_) { }
+    return {};
+}
+function saveVoiceConfig(config) {
+    try {
+        const p = getVoiceConfigPath();
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        const existing = loadVoiceConfig();
+        fs.writeFileSync(p, JSON.stringify({ ...existing, ...config }, null, 2), 'utf-8');
+    }
+    catch (err) {
+        electron_log_1.default.error('[VoiceGateway] Failed to save voice config:', err);
+    }
+}
 /**
  * Lightweight RFC-6455 WebSocket connection over a raw net.Socket.
  */
@@ -217,7 +246,8 @@ class VoiceGateway {
         clientWs.on('close', () => {
             this.activeClients.delete(clientWs);
         });
-        this.handleClientSession(clientWs);
+        const customKey = url.searchParams.get('key');
+        this.handleClientSession(clientWs, customKey || undefined);
         return true;
     }
     close() {
@@ -229,13 +259,15 @@ class VoiceGateway {
         }
         this.activeClients.clear();
     }
-    handleClientSession(clientWs) {
-        const apiKey = this.getApiKey();
+    handleClientSession(clientWs, explicitKey) {
+        const voiceCfg = loadVoiceConfig();
+        const apiKey = explicitKey || voiceCfg.apiKey || this.getApiKey();
         if (!apiKey) {
             electron_log_1.default.warn('[VoiceGateway] Connection rejected: No Google API key configured.');
             clientWs.send(JSON.stringify({
                 type: 'error',
-                error: 'No Google API key configured in custom models or environment.',
+                code: 1008,
+                error: 'No Google API key configured. Please enter your Google AI Studio API key (starts with AIzaSy) in the Live Voice Console.',
             }));
             clientWs.close(1008, 'API Key Missing');
             return;
@@ -328,14 +360,25 @@ class VoiceGateway {
         upstreamWs.onerror = (err) => {
             electron_log_1.default.error('[VoiceGateway] Upstream WebSocket error:', err);
             if (clientWs.readyState === 1) {
-                clientWs.send(JSON.stringify({ type: 'error', error: err?.message || 'Upstream error' }));
+                clientWs.send(JSON.stringify({ type: 'error', error: err?.message || 'Upstream connection error' }));
             }
         };
         upstreamWs.onclose = (event) => {
-            electron_log_1.default.info(`[VoiceGateway] Upstream closed: ${event?.code || 1000}`);
+            const code = event?.code || 1000;
+            const rawReason = (event?.reason || '').toString();
+            electron_log_1.default.warn(`[VoiceGateway] Upstream closed: code=${code}, reason="${rawReason}"`);
+            let friendlyError = rawReason || `Upstream closed with code ${code}`;
+            if (code === 1008) {
+                friendlyError = `Google Live API Blocked (1008): "${rawReason}". Cause: Your Google API key is restricted or Generative Language API is disabled. Please verify your Google AI Studio API key.`;
+            }
             if (clientWs.readyState === 1) {
-                clientWs.send(JSON.stringify({ type: 'closed', code: event?.code, reason: event?.reason }));
-                clientWs.close(event?.code || 1000, event?.reason || 'Upstream closed');
+                clientWs.send(JSON.stringify({
+                    type: 'error',
+                    code,
+                    error: friendlyError,
+                    rawReason,
+                }));
+                clientWs.close(code, rawReason);
             }
         };
         // ─── Client Handlers ────────────────────────────────────────────────────
@@ -352,7 +395,16 @@ class VoiceGateway {
                 }
                 else {
                     const parsed = JSON.parse(message.toString());
-                    if (parsed.type === 'audio' && parsed.data) {
+                    if (parsed.type === 'ping') {
+                        clientWs.send(JSON.stringify({
+                            type: 'pong',
+                            timestamp: Date.now(),
+                            hasApiKey: Boolean(apiKey),
+                            upstreamReady,
+                            upstreamState: upstreamWs ? upstreamWs.readyState : -1,
+                        }));
+                    }
+                    else if (parsed.type === 'audio' && parsed.data) {
                         const buf = Buffer.from(parsed.data, 'base64');
                         if (!upstreamReady || upstreamWs?.readyState !== globalThis.WebSocket.OPEN) {
                             if (pendingAudioQueue.length < 25)
@@ -378,6 +430,11 @@ class VoiceGateway {
                     }
                     else if (parsed.type === 'interrupt') {
                         electron_log_1.default.info('[VoiceGateway] Client requested interrupt.');
+                    }
+                    else if (parsed.type === 'save_key' && parsed.apiKey) {
+                        saveVoiceConfig({ apiKey: parsed.apiKey.trim() });
+                        electron_log_1.default.info('[VoiceGateway] Updated voice API key from client.');
+                        clientWs.send(JSON.stringify({ type: 'key_saved', success: true }));
                     }
                 }
             }

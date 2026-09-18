@@ -864,7 +864,7 @@ window.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
-    // ─── Real-Time Bidirectional Voice Interface ─────────────────────────────
+    // ─── Real-Time Bidirectional Voice Interface & Live Debug Console ─────────
     function setupVoiceInterface() {
         if (typeof window === 'undefined' || typeof document === 'undefined')
             return;
@@ -884,17 +884,17 @@ window.addEventListener('DOMContentLoaded', () => {
         display: flex;
         align-items: center;
         gap: 8px;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       }
       #agy-voice-btn {
         width: 44px;
         height: 44px;
         border-radius: 50%;
-        background: rgba(26, 27, 30, 0.88);
+        background: rgba(26, 27, 30, 0.9);
         backdrop-filter: blur(16px);
         -webkit-backdrop-filter: blur(16px);
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
         display: flex;
         align-items: center;
         justify-content: center;
@@ -904,58 +904,223 @@ window.addEventListener('DOMContentLoaded', () => {
         transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
       }
       #agy-voice-btn:hover {
-        transform: scale(1.06);
+        transform: scale(1.08);
         color: #f8fafc;
-        border-color: rgba(255, 255, 255, 0.28);
-        box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+        border-color: rgba(255, 255, 255, 0.3);
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
       }
       #agy-voice-btn.connecting {
         color: #f59e0b;
-        border-color: rgba(245, 158, 11, 0.6);
-        box-shadow: 0 0 16px rgba(245, 158, 11, 0.4);
-        animation: agy-voice-pulse 1.4s infinite ease-in-out;
+        border-color: rgba(245, 158, 11, 0.7);
+        box-shadow: 0 0 18px rgba(245, 158, 11, 0.5);
+        animation: agy-pulse 1.4s infinite ease-in-out;
       }
       #agy-voice-btn.listening {
         color: #38bdf8;
-        background: rgba(15, 23, 42, 0.92);
-        border-color: rgba(56, 189, 248, 0.7);
-        box-shadow: 0 0 20px rgba(56, 189, 248, 0.5);
+        background: rgba(15, 23, 42, 0.95);
+        border-color: rgba(56, 189, 248, 0.8);
+        box-shadow: 0 0 22px rgba(56, 189, 248, 0.6);
       }
       #agy-voice-btn.speaking {
         color: #c084fc;
-        background: rgba(24, 16, 42, 0.92);
-        border-color: rgba(192, 132, 252, 0.7);
-        box-shadow: 0 0 24px rgba(192, 132, 252, 0.65);
-        animation: agy-voice-speaking 0.9s infinite alternate ease-in-out;
+        background: rgba(24, 16, 42, 0.95);
+        border-color: rgba(192, 132, 252, 0.8);
+        box-shadow: 0 0 26px rgba(192, 132, 252, 0.75);
+        animation: agy-speaking 0.9s infinite alternate ease-in-out;
       }
       #agy-voice-btn.error {
         color: #ef4444;
-        border-color: rgba(239, 68, 68, 0.6);
-        box-shadow: 0 0 16px rgba(239, 68, 68, 0.4);
+        border-color: rgba(239, 68, 68, 0.8);
+        box-shadow: 0 0 20px rgba(239, 68, 68, 0.6);
+        background: rgba(40, 10, 15, 0.95);
+      }
+      #agy-voice-console-btn {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        background: rgba(26, 27, 30, 0.85);
+        backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        user-select: none;
+        color: #71717a;
+        transition: all 0.2s ease;
+      }
+      #agy-voice-console-btn:hover {
+        color: #38bdf8;
+        border-color: rgba(56, 189, 248, 0.4);
+        transform: scale(1.08);
       }
       #agy-voice-badge {
         display: none;
-        padding: 4px 10px;
+        padding: 5px 12px;
         font-size: 11px;
         font-weight: 500;
-        color: #e2e8f0;
-        background: rgba(15, 23, 42, 0.9);
-        border: 1px solid rgba(255, 255, 255, 0.12);
+        color: #f1f5f9;
+        background: rgba(15, 23, 42, 0.95);
+        border: 1px solid rgba(255, 255, 255, 0.15);
         border-radius: 12px;
-        backdrop-filter: blur(12px);
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+        backdrop-filter: blur(16px);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
         white-space: nowrap;
-        pointer-events: none;
-        transition: opacity 0.2s;
+        pointer-events: auto;
+        cursor: pointer;
       }
-      @keyframes agy-voice-pulse {
+      #agy-voice-console-drawer {
+        position: fixed;
+        bottom: 76px;
+        right: 22px;
+        width: 520px;
+        height: 520px;
+        max-height: calc(100vh - 100px);
+        max-width: calc(100vw - 44px);
+        border-radius: 14px;
+        background: rgba(13, 15, 22, 0.97);
+        backdrop-filter: blur(28px);
+        -webkit-backdrop-filter: blur(28px);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7);
+        display: none;
+        flex-direction: column;
+        overflow: hidden;
+        z-index: 999999;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        color: #e2e8f0;
+      }
+      .agy-console-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 14px;
+        background: rgba(255, 255, 255, 0.03);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .agy-console-title {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: #f8fafc;
+      }
+      .agy-console-status-pill {
+        font-size: 10px;
+        padding: 2px 7px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.1);
+        font-weight: 500;
+      }
+      .agy-console-status-pill.listening { background: rgba(56, 189, 248, 0.2); color: #38bdf8; }
+      .agy-console-status-pill.speaking { background: rgba(192, 132, 252, 0.2); color: #c084fc; }
+      .agy-console-status-pill.error { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+      .agy-console-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 12px;
+        background: rgba(0, 0, 0, 0.2);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        flex-wrap: wrap;
+      }
+      .agy-btn-action {
+        font-size: 11px;
+        padding: 4px 9px;
+        border-radius: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.06);
+        color: #cbd5e1;
+        cursor: pointer;
+        transition: all 0.15s;
+        user-select: none;
+      }
+      .agy-btn-action:hover {
+        background: rgba(255, 255, 255, 0.12);
+        color: #ffffff;
+      }
+      .agy-btn-action.highlight {
+        background: rgba(56, 189, 248, 0.2);
+        border-color: rgba(56, 189, 248, 0.4);
+        color: #38bdf8;
+      }
+      .agy-config-box {
+        padding: 8px 12px;
+        background: rgba(0, 0, 0, 0.3);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .agy-config-input-row {
+        display: flex;
+        gap: 6px;
+      }
+      .agy-config-input {
+        flex: 1;
+        background: rgba(0, 0, 0, 0.4);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 6px;
+        padding: 5px 8px;
+        font-size: 11px;
+        color: #f1f5f9;
+        font-family: monospace;
+      }
+      .agy-config-input:focus {
+        outline: none;
+        border-color: #38bdf8;
+      }
+      .agy-mic-meter-box {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 10px;
+        color: #94a3b8;
+      }
+      .agy-meter-outer {
+        flex: 1;
+        height: 6px;
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+      .agy-meter-inner {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #10b981, #38bdf8, #f59e0b, #ef4444);
+        transition: width 0.05s ease;
+      }
+      .agy-logs-window {
+        flex: 1;
+        padding: 10px 12px;
+        background: #090a0f;
+        overflow-y: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 11px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .agy-log-line { margin-bottom: 4px; }
+      .agy-log-ts { color: #64748b; margin-right: 6px; }
+      .agy-tag-info { color: #94a3b8; font-weight: 600; }
+      .agy-tag-mic { color: #38bdf8; font-weight: 600; }
+      .agy-tag-ws { color: #818cf8; font-weight: 600; }
+      .agy-tag-vad { color: #f59e0b; font-weight: 600; }
+      .agy-tag-error { color: #ef4444; font-weight: 700; }
+      .agy-tag-success { color: #10b981; font-weight: 600; }
+      .agy-tag-model { color: #c084fc; font-weight: 600; }
+      @keyframes agy-pulse {
         0% { transform: scale(1); opacity: 0.85; }
         50% { transform: scale(1.08); opacity: 1; }
         100% { transform: scale(1); opacity: 0.85; }
       }
-      @keyframes agy-voice-speaking {
+      @keyframes agy-speaking {
         0% { transform: scale(1); box-shadow: 0 0 16px rgba(192, 132, 252, 0.4); }
-        100% { transform: scale(1.07); box-shadow: 0 0 26px rgba(192, 132, 252, 0.8); }
+        100% { transform: scale(1.07); box-shadow: 0 0 28px rgba(192, 132, 252, 0.85); }
       }
     `;
         if (document.head)
@@ -966,10 +1131,19 @@ window.addEventListener('DOMContentLoaded', () => {
         const badge = document.createElement('div');
         badge.id = 'agy-voice-badge';
         badge.textContent = 'Gemini Live (Cmd+Shift+V)';
-        const btn = document.createElement('div');
-        btn.id = 'agy-voice-btn';
-        btn.title = 'Talk with Gemini Live (Cmd+Shift+V)';
-        btn.innerHTML = `
+        const consoleBtn = document.createElement('div');
+        consoleBtn.id = 'agy-voice-console-btn';
+        consoleBtn.title = 'Live Voice Debug Console (Cmd+Shift+D)';
+        consoleBtn.innerHTML = `
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="4 17 10 11 4 5"></polyline>
+        <line x1="12" y1="19" x2="20" y2="19"></line>
+      </svg>
+    `;
+        const micBtn = document.createElement('div');
+        micBtn.id = 'agy-voice-btn';
+        micBtn.title = 'Talk with Gemini Live (Cmd+Shift+V)';
+        micBtn.innerHTML = `
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
         <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
@@ -977,16 +1151,218 @@ window.addEventListener('DOMContentLoaded', () => {
       </svg>
     `;
         container.appendChild(badge);
-        container.appendChild(btn);
+        container.appendChild(consoleBtn);
+        container.appendChild(micBtn);
         document.body.appendChild(container);
-        container.addEventListener('mouseenter', () => {
-            badge.style.display = 'block';
+        // 3. Create Live Debug Console Drawer
+        const drawer = document.createElement('div');
+        drawer.id = 'agy-voice-console-drawer';
+        drawer.innerHTML = `
+      <div class="agy-console-header">
+        <div class="agy-console-title">
+          <span>🎙️ Live Voice Debug Console</span>
+          <span id="agy-console-status" class="agy-console-status-pill">Idle</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <button id="agy-btn-devtools" class="agy-btn-action" title="Open Chrome DevTools">Inspect</button>
+          <button id="agy-btn-close-console" class="agy-btn-action" style="padding:2px 7px;">✕</button>
+        </div>
+      </div>
+      <div class="agy-console-actions">
+        <button id="agy-btn-test-mic" class="agy-btn-action highlight">Test Mic (5s)</button>
+        <button id="agy-btn-test-gw" class="agy-btn-action">Test Gateway</button>
+        <button id="agy-btn-copy-logs" class="agy-btn-action">Copy Logs</button>
+        <button id="agy-btn-clear-logs" class="agy-btn-action">Clear</button>
+      </div>
+      <div class="agy-config-box">
+        <div class="agy-mic-meter-box">
+          <span>Mic Volume:</span>
+          <div class="agy-meter-outer"><div id="agy-mic-meter-inner" class="agy-meter-inner"></div></div>
+          <span id="agy-meter-val">0%</span>
+        </div>
+        <div class="agy-config-input-row">
+          <input id="agy-api-key-input" class="agy-config-input" type="password" placeholder="Enter Google AI Studio Key (AIzaSy...) to override" />
+          <button id="agy-btn-save-key" class="agy-btn-action">Save & Test</button>
+        </div>
+      </div>
+      <div id="agy-console-logs-window" class="agy-logs-window"></div>
+    `;
+        document.body.appendChild(drawer);
+        const logsWindow = drawer.querySelector('#agy-console-logs-window');
+        const statusPill = drawer.querySelector('#agy-console-status');
+        const meterInner = drawer.querySelector('#agy-mic-meter-inner');
+        const meterVal = drawer.querySelector('#agy-meter-val');
+        const apiKeyInput = drawer.querySelector('#agy-api-key-input');
+        // Restore cached key if present
+        try {
+            const savedKey = localStorage.getItem('agy_voice_custom_key');
+            if (savedKey)
+                apiKeyInput.value = savedKey;
+        }
+        catch (_) { }
+        // Internal Logging
+        const rawLogs = [];
+        function logMsg(category, text, level = 'info') {
+            const d = new Date();
+            const ts = d.toTimeString().split(' ')[0] + '.' + String(d.getMilliseconds()).padStart(3, '0');
+            const cleanLine = `[${ts}] [${category}] ${text}`;
+            rawLogs.push(cleanLine);
+            if (rawLogs.length > 300)
+                rawLogs.shift();
+            if (logsWindow) {
+                const line = document.createElement('div');
+                line.className = 'agy-log-line';
+                line.innerHTML = `<span class="agy-log-ts">[${ts}]</span> <span class="agy-tag-${level}">[${category}]</span> <span>${escapeHtml(text)}</span>`;
+                logsWindow.appendChild(line);
+                logsWindow.scrollTop = logsWindow.scrollHeight;
+            }
+            console.log(`[Voice][${category}]`, text);
+        }
+        function escapeHtml(s) {
+            return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+        logMsg('INIT', 'Voice Debug Console ready. Proxy at ws://127.0.0.1:50999/ws/live', 'info');
+        // Drawer toggle
+        function toggleDrawer(forceOpen) {
+            const isOpen = drawer.style.display === 'flex';
+            const next = forceOpen !== undefined ? forceOpen : !isOpen;
+            drawer.style.display = next ? 'flex' : 'none';
+            if (next && logsWindow)
+                logsWindow.scrollTop = logsWindow.scrollHeight;
+        }
+        consoleBtn.addEventListener('click', () => toggleDrawer());
+        drawer.querySelector('#agy-btn-close-console')?.addEventListener('click', () => toggleDrawer(false));
+        badge.addEventListener('click', () => toggleDrawer(true));
+        // Open Chrome DevTools button
+        drawer.querySelector('#agy-btn-devtools')?.addEventListener('click', async () => {
+            try {
+                logMsg('DEVTOOLS', 'Opening Chrome DevTools...', 'info');
+                await electron_1.ipcRenderer.invoke('window:toggle-devtools');
+            }
+            catch (err) {
+                logMsg('DEVTOOLS', 'Failed to toggle DevTools: ' + err.message, 'error');
+            }
         });
-        container.addEventListener('mouseleave', () => {
-            if (voiceState === 'idle')
-                badge.style.display = 'none';
+        // Clear logs button
+        drawer.querySelector('#agy-btn-clear-logs')?.addEventListener('click', () => {
+            rawLogs.length = 0;
+            if (logsWindow)
+                logsWindow.innerHTML = '';
+            logMsg('CONSOLE', 'Logs cleared.', 'info');
         });
-        // 3. Audio & WebSocket State
+        // Copy logs button
+        drawer.querySelector('#agy-btn-copy-logs')?.addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(rawLogs.join('\n'));
+                logMsg('CLIPBOARD', 'Copied all logs to clipboard!', 'success');
+            }
+            catch (err) {
+                logMsg('CLIPBOARD', 'Copy failed: ' + err.message, 'error');
+            }
+        });
+        // Save key button
+        drawer.querySelector('#agy-btn-save-key')?.addEventListener('click', () => {
+            const val = apiKeyInput.value.trim();
+            if (!val) {
+                logMsg('CONFIG', 'Please enter a valid key.', 'error');
+                return;
+            }
+            try {
+                localStorage.setItem('agy_voice_custom_key', val);
+                logMsg('CONFIG', `Voice API key saved locally (${val.slice(0, 7)}...). Testing gateway...`, 'success');
+                testGatewayConnection(val);
+            }
+            catch (e) {
+                logMsg('CONFIG', 'Failed to save key: ' + e.message, 'error');
+            }
+        });
+        // ─── Diagnostic Tests ───────────────────────────────────────────────────
+        let micTestAudioCtx = null;
+        let micTestStream = null;
+        async function runMicTest() {
+            try {
+                logMsg('MIC-TEST', 'Requesting microphone access via getUserMedia...', 'mic');
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: { channelCount: 1, sampleRate: 24000, echoCancellation: true, noiseSuppression: true },
+                });
+                micTestStream = stream;
+                const track = stream.getAudioTracks()[0];
+                logMsg('MIC-TEST', `Mic access GRANTED! Device: "${track.label}"`, 'success');
+                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                micTestAudioCtx = new AudioContextClass({ sampleRate: 24000 });
+                const src = micTestAudioCtx.createMediaStreamSource(stream);
+                const proc = micTestAudioCtx.createScriptProcessor(2048, 1, 1);
+                let peakRms = 0;
+                proc.onaudioprocess = (e) => {
+                    const ch = e.inputBuffer.getChannelData(0);
+                    let sum = 0;
+                    for (let i = 0; i < ch.length; i++)
+                        sum += ch[i] * ch[i];
+                    const rms = Math.sqrt(sum / ch.length);
+                    if (rms > peakRms)
+                        peakRms = rms;
+                    const pct = Math.min(100, Math.round(rms * 400));
+                    if (meterInner)
+                        meterInner.style.width = pct + '%';
+                    if (meterVal)
+                        meterVal.textContent = pct + '%';
+                };
+                src.connect(proc);
+                proc.connect(micTestAudioCtx.destination);
+                logMsg('MIC-TEST', 'Listening for 5 seconds... Speak into your microphone now!', 'mic');
+                setTimeout(() => {
+                    try {
+                        proc.disconnect();
+                        src.disconnect();
+                        void micTestAudioCtx?.close();
+                        stream.getTracks().forEach((t) => t.stop());
+                        if (meterInner)
+                            meterInner.style.width = '0%';
+                        if (meterVal)
+                            meterVal.textContent = '0%';
+                        logMsg('MIC-TEST', `Test finished. Peak Volume: ${Math.round(peakRms * 100)}% (RMS: ${peakRms.toFixed(4)})`, peakRms > 0.01 ? 'success' : 'warn');
+                    }
+                    catch (_) { }
+                }, 5000);
+            }
+            catch (err) {
+                logMsg('MIC-TEST', `Microphone access FAILED: ${err.name} - ${err.message}`, 'error');
+                toggleDrawer(true);
+            }
+        }
+        drawer.querySelector('#agy-btn-test-mic')?.addEventListener('click', runMicTest);
+        function testGatewayConnection(explicitKey) {
+            logMsg('GW-TEST', 'Testing connection to ws://127.0.0.1:50999/ws/live...', 'ws');
+            const key = explicitKey || apiKeyInput.value.trim() || localStorage.getItem('agy_voice_custom_key') || '';
+            const url = key ? `ws://127.0.0.1:50999/ws/live?key=${encodeURIComponent(key)}` : 'ws://127.0.0.1:50999/ws/live';
+            const testWs = new WebSocket(url);
+            const start = Date.now();
+            testWs.onopen = () => {
+                logMsg('GW-TEST', `Connected to local proxy in ${Date.now() - start}ms. Waiting for upstream handshake...`, 'success');
+                testWs.send(JSON.stringify({ type: 'ping' }));
+            };
+            testWs.onmessage = (e) => {
+                logMsg('GW-TEST', `Received frame: ${e.data}`, 'ws');
+                try {
+                    const parsed = JSON.parse(e.data);
+                    if (parsed.type === 'ready') {
+                        logMsg('GW-TEST', `Upstream Google Multimodal Live API READY! Model: ${parsed.model}, Voice: ${parsed.voice}`, 'success');
+                    }
+                    else if (parsed.type === 'error') {
+                        logMsg('GW-TEST', `Gateway error: ${parsed.error}`, 'error');
+                    }
+                }
+                catch (_) { }
+            };
+            testWs.onerror = (e) => {
+                logMsg('GW-TEST', 'WebSocket transport error: ' + (e?.message || 'Check if proxy is running'), 'error');
+            };
+            testWs.onclose = (e) => {
+                logMsg('GW-TEST', `WebSocket closed (code: ${e.code}, reason: "${e.reason}")`, e.code === 1000 ? 'info' : 'error');
+            };
+        }
+        drawer.querySelector('#agy-btn-test-gw')?.addEventListener('click', () => testGatewayConnection());
+        // ─── Voice Audio & WebSocket Session ────────────────────────────────────
         let voiceState = 'idle';
         let ws = null;
         let micStream = null;
@@ -997,7 +1373,11 @@ window.addEventListener('DOMContentLoaded', () => {
         const activeSources = [];
         function updateUiState(newState, message) {
             voiceState = newState;
-            btn.className = newState !== 'idle' ? newState : '';
+            micBtn.className = newState !== 'idle' ? newState : '';
+            if (statusPill) {
+                statusPill.textContent = newState.toUpperCase();
+                statusPill.className = `agy-console-status-pill ${newState}`;
+            }
             if (message) {
                 badge.textContent = message;
                 badge.style.display = 'block';
@@ -1009,11 +1389,11 @@ window.addEventListener('DOMContentLoaded', () => {
                         badge.style.display = 'none';
                         break;
                     case 'connecting':
-                        badge.textContent = 'Connecting...';
+                        badge.textContent = 'Connecting to Gemini Live...';
                         badge.style.display = 'block';
                         break;
                     case 'listening':
-                        badge.textContent = 'Listening...';
+                        badge.textContent = 'Listening... (Speak)';
                         badge.style.display = 'block';
                         break;
                     case 'speaking':
@@ -1021,7 +1401,7 @@ window.addEventListener('DOMContentLoaded', () => {
                         badge.style.display = 'block';
                         break;
                     case 'error':
-                        badge.textContent = 'Voice Error';
+                        badge.textContent = 'Voice Error (Click to inspect)';
                         badge.style.display = 'block';
                         break;
                 }
@@ -1035,12 +1415,10 @@ window.addEventListener('DOMContentLoaded', () => {
                 catch (_) { }
             }
             activeSources.length = 0;
-            if (playbackAudioCtx) {
+            if (playbackAudioCtx)
                 nextPlayTime = playbackAudioCtx.currentTime;
-            }
-            if (voiceState === 'speaking') {
+            if (voiceState === 'speaking')
                 updateUiState('listening');
-            }
         }
         function playAudioChunk(base64Pcm) {
             if (!playbackAudioCtx) {
@@ -1050,29 +1428,25 @@ window.addEventListener('DOMContentLoaded', () => {
                 playbackAudioCtx = new AudioContextClass({ sampleRate: 24000 });
                 nextPlayTime = playbackAudioCtx.currentTime;
             }
-            if (playbackAudioCtx.state === 'suspended') {
+            if (playbackAudioCtx.state === 'suspended')
                 void playbackAudioCtx.resume();
-            }
             try {
                 const binary = atob(base64Pcm);
                 const bytes = new Uint8Array(binary.length);
-                for (let i = 0; i < binary.length; i++) {
+                for (let i = 0; i < binary.length; i++)
                     bytes[i] = binary.charCodeAt(i);
-                }
                 const int16 = new Int16Array(bytes.buffer);
                 const float32 = new Float32Array(int16.length);
-                for (let i = 0; i < int16.length; i++) {
+                for (let i = 0; i < int16.length; i++)
                     float32[i] = int16[i] / 32768.0;
-                }
                 const audioBuffer = playbackAudioCtx.createBuffer(1, float32.length, 24000);
                 audioBuffer.getChannelData(0).set(float32);
                 const source = playbackAudioCtx.createBufferSource();
                 source.buffer = audioBuffer;
                 source.connect(playbackAudioCtx.destination);
                 const now = playbackAudioCtx.currentTime;
-                if (nextPlayTime < now) {
+                if (nextPlayTime < now)
                     nextPlayTime = now + 0.02; // 20ms jitter buffer
-                }
                 source.start(nextPlayTime);
                 nextPlayTime += audioBuffer.duration;
                 updateUiState('speaking');
@@ -1087,72 +1461,84 @@ window.addEventListener('DOMContentLoaded', () => {
                 };
             }
             catch (e) {
-                console.error('[Voice] Error decoding audio chunk:', e);
+                logMsg('AUDIO', 'Audio decode error: ' + e.message, 'error');
             }
         }
         async function startVoiceSession() {
             try {
-                updateUiState('connecting');
+                updateUiState('connecting', 'Starting microphone...');
+                logMsg('SESSION', 'Starting live voice session...', 'info');
                 // Request microphone access
+                logMsg('MIC', 'Requesting microphone stream (24kHz mono)...', 'mic');
                 micStream = await navigator.mediaDevices.getUserMedia({
-                    audio: {
-                        channelCount: 1,
-                        sampleRate: 24000,
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true,
-                    },
+                    audio: { channelCount: 1, sampleRate: 24000, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
                 });
+                logMsg('MIC', 'Microphone stream acquired successfully.', 'success');
                 // Connect to local proxy VoiceGateway
-                const wsUrl = 'ws://127.0.0.1:50999/ws/live';
+                const key = apiKeyInput.value.trim() || localStorage.getItem('agy_voice_custom_key') || '';
+                const wsUrl = key ? `ws://127.0.0.1:50999/ws/live?key=${encodeURIComponent(key)}` : 'ws://127.0.0.1:50999/ws/live';
+                logMsg('WS', `Connecting to Voice Gateway (${wsUrl.split('?')[0]})...`, 'ws');
                 ws = new WebSocket(wsUrl);
                 ws.binaryType = 'arraybuffer';
                 ws.onopen = () => {
-                    updateUiState('connecting', 'Connecting to Gemini...');
+                    logMsg('WS', 'Connected to local proxy. Handshaking with Google Gemini Live API...', 'ws');
+                    updateUiState('connecting', 'Handshaking with Gemini Live...');
                 };
                 ws.onmessage = (event) => {
                     try {
                         const msg = JSON.parse(event.data);
                         if (msg.type === 'ready') {
+                            logMsg('UPSTREAM', `Gemini Multimodal Live ready! Voice: ${msg.voice}, Model: ${msg.model}`, 'success');
                             updateUiState('listening');
                             startMicAudioPipeline();
                         }
                         else if (msg.type === 'interrupted') {
+                            logMsg('VAD', 'User interrupted model speech (barge-in).', 'vad');
                             stopPlayback();
                         }
                         else if (msg.type === 'audio' && msg.data) {
                             playAudioChunk(msg.data);
                         }
+                        else if (msg.type === 'text' && msg.text) {
+                            logMsg('MODEL', msg.text, 'model');
+                        }
                         else if (msg.type === 'turn_complete') {
-                            if (activeSources.length === 0) {
+                            if (activeSources.length === 0)
                                 updateUiState('listening');
-                            }
                         }
                         else if (msg.type === 'error') {
-                            console.error('[Voice] Gateway reported error:', msg.error);
-                            updateUiState('error', msg.error || 'Gateway error');
-                            setTimeout(stopVoiceSession, 3000);
+                            logMsg('ERROR', `Gateway reported error: ${msg.error}`, 'error');
+                            updateUiState('error', msg.error);
+                            toggleDrawer(true);
+                        }
+                        else if (msg.type === 'closed') {
+                            logMsg('WS', `Upstream closed (code: ${msg.code}, reason: "${msg.reason}")`, msg.code === 1000 ? 'info' : 'error');
+                            if (msg.code === 1008) {
+                                logMsg('DIAGNOSIS', 'Code 1008 indicates your Google API key has restrictions or Generative Language API is disabled. Paste an unrestricted Google AI Studio API key in the console above.', 'error');
+                                toggleDrawer(true);
+                            }
                         }
                     }
                     catch (e) {
-                        console.error('[Voice] Failed to handle message:', e);
+                        logMsg('WS', 'Error parsing message: ' + e.message, 'error');
                     }
                 };
                 ws.onerror = (err) => {
-                    console.error('[Voice] WebSocket error:', err);
+                    logMsg('WS', 'WebSocket transport error: ' + (err?.message || 'Check proxy status'), 'error');
                     updateUiState('error', 'Connection failed');
-                    setTimeout(stopVoiceSession, 2500);
+                    toggleDrawer(true);
                 };
-                ws.onclose = () => {
-                    if (voiceState !== 'idle') {
+                ws.onclose = (e) => {
+                    logMsg('WS', `Connection closed (code: ${e.code}, reason: "${e.reason}")`, 'info');
+                    if (voiceState !== 'error') {
                         stopVoiceSession();
                     }
                 };
             }
             catch (err) {
-                console.error('[Voice] Mic permission or startup error:', err);
+                logMsg('MIC', `Mic access failed: ${err.name} - ${err.message}`, 'error');
                 updateUiState('error', err.message || 'Mic access denied');
-                setTimeout(stopVoiceSession, 3000);
+                toggleDrawer(true);
             }
         }
         function startMicAudioPipeline() {
@@ -1168,28 +1554,35 @@ window.addEventListener('DOMContentLoaded', () => {
                 if (!ws || ws.readyState !== WebSocket.OPEN)
                     return;
                 const input = e.inputBuffer.getChannelData(0);
-                // Simple RMS VAD for barge-in detection
+                // RMS VAD
                 let sum = 0;
-                for (let i = 0; i < input.length; i++) {
+                for (let i = 0; i < input.length; i++)
                     sum += input[i] * input[i];
-                }
                 const rms = Math.sqrt(sum / input.length);
-                // If user speaks while model is speaking, barge-in!
+                // Update live meter if drawer is open
+                if (drawer.style.display === 'flex' && meterInner) {
+                    const pct = Math.min(100, Math.round(rms * 400));
+                    meterInner.style.width = pct + '%';
+                    if (meterVal)
+                        meterVal.textContent = pct + '%';
+                }
+                // Barge-in check
                 if (rms > 0.04 && voiceState === 'speaking') {
+                    logMsg('VAD', `Barge-in triggered locally (RMS: ${rms.toFixed(3)})`, 'vad');
                     stopPlayback();
                     ws.send(JSON.stringify({ type: 'interrupt' }));
                 }
-                // Convert Float32 [-1, 1] to Int16 PCM
+                // Convert Float32 to Int16 PCM
                 const pcm16 = new Int16Array(input.length);
                 for (let i = 0; i < input.length; i++) {
                     const s = Math.max(-1, Math.min(1, input[i]));
                     pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
                 }
-                // Stream binary PCM buffer
                 ws.send(pcm16.buffer);
             };
             sourceNode.connect(micProcessor);
             micProcessor.connect(micAudioCtx.destination);
+            logMsg('MIC', 'Real-time 24kHz audio capture streaming to Gemini Live.', 'success');
         }
         function stopVoiceSession() {
             stopPlayback();
@@ -1228,24 +1621,37 @@ window.addEventListener('DOMContentLoaded', () => {
                 catch (_) { }
                 ws = null;
             }
+            if (meterInner)
+                meterInner.style.width = '0%';
+            if (meterVal)
+                meterVal.textContent = '0%';
             updateUiState('idle');
+            logMsg('SESSION', 'Live voice session stopped.', 'info');
         }
         function toggleVoice() {
             if (voiceState === 'idle') {
+                void startVoiceSession();
+            }
+            else if (voiceState === 'error') {
+                // Clear error and restart
+                stopVoiceSession();
                 void startVoiceSession();
             }
             else {
                 stopVoiceSession();
             }
         }
-        btn.addEventListener('click', () => {
-            toggleVoice();
-        });
-        // Global hotkey: Cmd+Shift+V or Ctrl+Shift+V
+        micBtn.addEventListener('click', toggleVoice);
+        // Hotkey: Cmd+Shift+V / Ctrl+Shift+V for Voice
+        // Hotkey: Cmd+Shift+D / Ctrl+Shift+D for Debug Console
         window.addEventListener('keydown', (e) => {
             if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === 'KeyV') {
                 e.preventDefault();
                 toggleVoice();
+            }
+            else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === 'KeyD') {
+                e.preventDefault();
+                toggleDrawer();
             }
         });
     }
