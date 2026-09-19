@@ -1765,6 +1765,7 @@ window.addEventListener('DOMContentLoaded', () => {
     let speechFramesCount = 0;
     const NATURAL_PAUSE_MS = 1100; // 1.1s natural pause to formulate thoughts
     let activeConvInterval: any = null;
+    let pauseThinkingTimeout: any = null;
 
     function getPlaybackContext(): AudioContext {
       if (!playbackAudioCtx || playbackAudioCtx.state === 'closed') {
@@ -1779,6 +1780,10 @@ window.addEventListener('DOMContentLoaded', () => {
 
     function playAudioChunk(arrayBuffer: ArrayBuffer) {
       try {
+        if (pauseThinkingTimeout) {
+          clearTimeout(pauseThinkingTimeout);
+          pauseThinkingTimeout = null;
+        }
         const ctx = getPlaybackContext();
         const pcmData = new Int16Array(arrayBuffer);
         if (pcmData.length === 0) return;
@@ -1948,6 +1953,13 @@ window.addEventListener('DOMContentLoaded', () => {
                   stopAudioPlayback();
                 } else if (msg.type === 'turn_complete') {
                   logMsg('STATUS', 'Turn complete.', 'info');
+                  if (pauseThinkingTimeout) {
+                    clearTimeout(pauseThinkingTimeout);
+                    pauseThinkingTimeout = null;
+                  }
+                  if (voiceState !== 'idle' && scheduledSources.length === 0) {
+                    updateUiState('listening', '🎙️ Listening... (Speak naturally anytime)');
+                  }
                 } else if (msg.type === 'user' && msg.text) {
                   renderTranscriptLine('User', msg.text);
                 } else if ((msg.type === 'model' || msg.type === 'gemini') && msg.text) {
@@ -2068,12 +2080,12 @@ window.addEventListener('DOMContentLoaded', () => {
         const input = e.inputBuffer.getChannelData(0);
 
         // Acoustic Echo Cancellation / Gating:
-        // While Butler is speaking or within 350ms reverb cooldown, mute mic completely
+        // While Butler audio is physically playing or within 350ms reverb cooldown, mute mic completely
         // so the speaker output never hits the mic and causes self-interruption!
-        const isButlerSpeaking = voiceState === 'speaking' || scheduledSources.length > 0;
+        const isButlerAudioPlaying = scheduledSources.length > 0;
         const inEchoCooldown = Date.now() - lastPlaybackEndTime < 350;
 
-        if (isButlerSpeaking || inEchoCooldown) {
+        if (isButlerAudioPlaying || inEchoCooldown) {
           speechFramesCount = 0;
           isUserSpeaking = false;
           return;
@@ -2136,7 +2148,7 @@ window.addEventListener('DOMContentLoaded', () => {
             ws.send(pcm16.buffer);
           }
 
-          // Natural Pause Detection: When you pause for 1.1s, Gemini automatically answers!
+          // Natural Pause Detection: When you pause for 1.1s, notify Gemini
           if (now - lastVocalSpeechTime > NATURAL_PAUSE_MS) {
             isUserSpeaking = false;
             logMsg('TURN', `Natural pause (${NATURAL_PAUSE_MS}ms) detected. Gemini answering...`, 'info');
@@ -2145,6 +2157,16 @@ window.addEventListener('DOMContentLoaded', () => {
               const silence = new Int16Array(1600); // 100ms silence frame
               ws.send(silence.buffer);
             }
+
+            // Watchdog: If Gemini does not send audio or turn_complete within 2.5s, cleanly reset to listening
+            if (pauseThinkingTimeout) clearTimeout(pauseThinkingTimeout);
+            pauseThinkingTimeout = setTimeout(() => {
+              if (scheduledSources.length === 0 && voiceState !== 'idle') {
+                logMsg('TIMEOUT', 'No response needed or Gemini finished turn. Ready for next query.', 'info');
+                updateUiState('listening', '🎙️ Listening... (Speak naturally)');
+              }
+              pauseThinkingTimeout = null;
+            }, 2500);
           }
         }
       };
@@ -2155,6 +2177,10 @@ window.addEventListener('DOMContentLoaded', () => {
 
     function stopVoiceSession() {
       isUserSpeaking = false;
+      if (pauseThinkingTimeout) {
+        clearTimeout(pauseThinkingTimeout);
+        pauseThinkingTimeout = null;
+      }
       stopAudioPlayback();
 
       if (micProcessor) {

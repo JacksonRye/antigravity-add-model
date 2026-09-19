@@ -18,14 +18,30 @@ echo "[2/5] Switching to feat/realtime-voice branch..."
 cd "$REPO_DIR"
 git checkout feat/realtime-voice
 
-echo "[3/5] Compiling live voice gateway and UI..."
+echo "[3/6] Starting / Reloading Gemini Live backend service on port 8000..."
+PYTHON_SERVICE_DIR="/Users/gameboy/Documents/Dev Apps/gemini-live-genai-python-sdk"
+if lsof -ti :8000 >/dev/null 2>&1; then
+    echo "      Stopping previous backend process (PID: $(lsof -ti :8000))..."
+    kill -9 $(lsof -ti :8000) 2>/dev/null || true
+    sleep 1
+fi
+echo "      Starting Gemini Live Python daemon..."
+(cd "$PYTHON_SERVICE_DIR" && nohup .venv/bin/uvicorn main:app --port 8000 --host 0.0.0.0 > uvicorn.log 2>&1 &)
+sleep 2
+if lsof -ti :8000 >/dev/null 2>&1; then
+    echo "      Gemini Live backend is running on port 8000 (PID: $(lsof -ti :8000))."
+else
+    echo "      Warning: Could not start backend automatically. Check $PYTHON_SERVICE_DIR/uvicorn.log"
+fi
+
+echo "[4/6] Compiling live voice gateway and UI..."
 npm run build
 
-echo "[4/5] Deploying live voice patch..."
-sudo rm -f "$APP_PATH/Contents/Resources/.antigravity-model-patch/deploy.lock" 2>/dev/null || true
-sudo ./deploy.sh
+echo "[5/6] Deploying live voice patch..."
+rm -f "$APP_PATH/Contents/Resources/.antigravity-model-patch/deploy.lock" 2>/dev/null || true
+./deploy.sh
 
-echo "[5/5] Launching Antigravity with Live Voice enabled..."
+echo "[6/6] Launching Antigravity with Live Voice enabled..."
 open -a "$APP_PATH"
 
 echo ""
