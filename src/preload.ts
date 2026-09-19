@@ -1376,7 +1376,7 @@ window.addEventListener('DOMContentLoaded', () => {
     drawer.innerHTML = `
       <div class="agy-console-header">
         <div class="agy-console-title">
-          <span>🎙️ Vertex AI Live Voice Console</span>
+          <span>🎙️ Gemini Live (Native Neural Voice)</span>
           <span id="agy-console-status" class="agy-console-status-pill">Idle</span>
         </div>
         <div style="display:flex;align-items:center;gap:6px;">
@@ -1386,7 +1386,7 @@ window.addEventListener('DOMContentLoaded', () => {
       </div>
       <div class="agy-console-actions">
         <button id="agy-btn-test-mic" class="agy-btn-action highlight">Test Mic (5s)</button>
-        <button id="agy-btn-test-gw" class="agy-btn-action">Test Vertex AI</button>
+        <button id="agy-btn-test-gw" class="agy-btn-action">Test Live Service</button>
         <button id="agy-btn-copy-logs" class="agy-btn-action">Copy Logs</button>
         <button id="agy-btn-clear-logs" class="agy-btn-action">Clear</button>
       </div>
@@ -1397,12 +1397,8 @@ window.addEventListener('DOMContentLoaded', () => {
           <span id="agy-meter-val">0%</span>
         </div>
         <div class="agy-config-input-row" style="margin-top:4px;">
-          <input id="agy-project-input" class="agy-config-input" style="flex:1;" placeholder="GCP Project ID (e.g. my-project-id)" />
-          <input id="agy-region-input" class="agy-config-input" style="width:100px;" placeholder="Region" value="us-central1" />
-        </div>
-        <div class="agy-config-input-row" style="margin-top:4px;">
-          <input id="agy-token-input" class="agy-config-input" style="flex:1;" type="password" placeholder="GCP Bearer / OAuth Token (ya29... or AQ...)" />
-          <button id="agy-btn-save-config" class="agy-btn-action highlight">Save & Connect</button>
+          <input id="agy-service-url-input" class="agy-config-input" style="flex:1;" placeholder="ws://127.0.0.1:8000/ws" value="ws://127.0.0.1:8000/ws" />
+          <button id="agy-btn-save-config" class="agy-btn-action highlight">Save & Reconnect</button>
         </div>
       </div>
       <div id="agy-console-logs-window" class="agy-logs-window"></div>
@@ -1413,18 +1409,12 @@ window.addEventListener('DOMContentLoaded', () => {
     const statusPill = drawer.querySelector('#agy-console-status') as HTMLSpanElement;
     const meterInner = drawer.querySelector('#agy-mic-meter-inner') as HTMLDivElement;
     const meterVal = drawer.querySelector('#agy-meter-val') as HTMLSpanElement;
-    const projectInput = drawer.querySelector('#agy-project-input') as HTMLInputElement;
-    const regionInput = drawer.querySelector('#agy-region-input') as HTMLInputElement;
-    const tokenInput = drawer.querySelector('#agy-token-input') as HTMLInputElement;
+    const serviceUrlInput = drawer.querySelector('#agy-service-url-input') as HTMLInputElement;
 
-    // Restore cached Vertex AI config
+    // Restore cached service URL
     try {
-      const savedToken = localStorage.getItem('agy_voice_token') || localStorage.getItem('agy_voice_custom_key');
-      if (savedToken && tokenInput) tokenInput.value = savedToken;
-      const savedProject = localStorage.getItem('agy_voice_project');
-      if (savedProject && projectInput) projectInput.value = savedProject;
-      const savedRegion = localStorage.getItem('agy_voice_region');
-      if (savedRegion && regionInput) regionInput.value = savedRegion;
+      const savedUrl = localStorage.getItem('agy_voice_service_url');
+      if (savedUrl && serviceUrlInput) serviceUrlInput.value = savedUrl;
     } catch (_) {}
 
     // Internal Logging
@@ -1450,7 +1440,160 @@ window.addEventListener('DOMContentLoaded', () => {
       return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
-    logMsg('INIT', 'Voice Debug Console ready. Proxy at ws://127.0.0.1:50999/ws/live', 'info');
+    // ─── Antigravity Chat Watcher & Butler Integration ───────────────────────
+
+    let lastSummarizedHash = '';
+    let wasGenerating = false;
+
+    function renderTranscriptLine(speaker: 'User' | 'Gemini', text: string) {
+      logMsg(speaker.toUpperCase(), text, speaker === 'User' ? 'mic' : 'model');
+    }
+
+    // Detects active conversation UUID to pin Butler exclusively to this chat
+    function getActiveConversationId(): string | null {
+      // 1. Antigravity main conversation view container
+      try {
+        const viewEl = document.querySelector('[data-testid="conversation-view"][data-cascade-id]');
+        if (viewEl) {
+          const id = viewEl.getAttribute('data-cascade-id');
+          if (id && /^[0-9a-f-]{36}$/i.test(id)) return id;
+        }
+      } catch (_) {}
+
+      // 2. Active sidebar conversation row
+      try {
+        const selectedRow = document.querySelector('[data-testid="conversation-row-sidebar"][data-selected="true"], [data-selected="true"][data-cascade-id]');
+        if (selectedRow) {
+          const id = selectedRow.getAttribute('data-cascade-id');
+          if (id && /^[0-9a-f-]{36}$/i.test(id)) return id;
+        }
+      } catch (_) {}
+
+      // 3. URL params or path match
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const id = params.get('conversation_id') || params.get('conversationId') || params.get('id');
+        if (id && /^[0-9a-f-]{36}$/i.test(id)) return id;
+      } catch (_) {}
+
+      try {
+        const match = (window.location.pathname + window.location.hash).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+        if (match) return match[0];
+      } catch (_) {}
+
+      try {
+        const activeLink = document.querySelector('a[href*="/c/"][aria-current], a[href*="/c/"].active, .active a[href*="/c/"]');
+        if (activeLink) {
+          const m = activeLink.getAttribute('href')?.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+          if (m) return m[0];
+        }
+      } catch (_) {}
+
+      try {
+        const el = document.querySelector('[data-conversation-id], [data-session-id], [data-chat-id]');
+        if (el) {
+          const id = el.getAttribute('data-conversation-id') || el.getAttribute('data-session-id') || el.getAttribute('data-chat-id');
+          if (id && /^[0-9a-f-]{36}$/i.test(id)) return id;
+        }
+      } catch (_) {}
+
+      return null;
+    }
+
+    // Scrapes visible on-screen chat context from Antigravity IDE
+    function getVisibleChatHistory(): string {
+      const items: { role: string; text: string }[] = [];
+
+      // 1. Query structured chat containers
+      const chatRows = document.querySelectorAll(
+        '.interactive-item-container, .chat-item, .chat-row, .interactive-session .monaco-list-row, [data-role="user"], [data-role="assistant"], [data-role="model"]'
+      );
+
+      if (chatRows.length > 0) {
+        chatRows.forEach((row) => {
+          const el = row as HTMLElement;
+          const isUser =
+            el.matches('[data-role="user"], .interactive-request, .chat-request, .user-prompt') ||
+            el.querySelector('.interactive-request, .chat-request, .user-prompt, [data-role="user"]') !== null ||
+            (el.className && typeof el.className === 'string' && /request|user/i.test(el.className));
+
+          const role = isUser ? 'User' : 'Antigravity Agent';
+          const textEl = el.querySelector('.rendered-markdown, .interactive-item-view, .chat-message-content') || el;
+          let text = (textEl.textContent || '').trim();
+          if (text) {
+            text = text.replace(/```[\s\S]*?```/g, '[code snippet]').replace(/\s+/g, ' ').slice(0, 500);
+            if (text.length > 5) {
+              items.push({ role, text });
+            }
+          }
+        });
+      }
+
+      // 2. Fallback: query markdown blocks if specific rows aren't separated
+      if (items.length === 0) {
+        const markdowns = document.querySelectorAll('.rendered-markdown');
+        markdowns.forEach((md, idx) => {
+          let text = (md.textContent || '').trim();
+          if (text) {
+            text = text.replace(/```[\s\S]*?```/g, '[code snippet]').replace(/\s+/g, ' ').slice(0, 500);
+            if (text.length > 5) {
+              items.push({ role: idx % 2 === 0 ? 'User' : 'Antigravity Agent', text });
+            }
+          }
+        });
+      }
+
+      if (items.length === 0) return '';
+      const recent = items.slice(-6);
+      return recent.map((item) => `${item.role}: ${item.text}`).join('\n');
+    }
+
+    function setupChatResponseWatcher() {
+      const observer = new MutationObserver(() => {
+        const stopBtn = document.querySelector('button[aria-label*="Stop"], button[aria-label*="Cancel"], .codicon-stop-circle, .interactive-progress');
+        const isGenerating = Boolean(stopBtn);
+
+        if (isGenerating) {
+          wasGenerating = true;
+          return;
+        }
+
+        if (wasGenerating && !isGenerating) {
+          wasGenerating = false;
+          handleAgentResponseComplete();
+        }
+      });
+
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    function handleAgentResponseComplete() {
+      const responses = document.querySelectorAll('.interactive-item-container .rendered-markdown, .chat-response .rendered-markdown, .rendered-markdown');
+      if (!responses || responses.length === 0) return;
+
+      const latest = responses[responses.length - 1] as HTMLElement;
+      const rawText = (latest.innerText || latest.textContent || '').trim();
+      if (!rawText || rawText.length < 15) return;
+
+      const hash = rawText.slice(0, 120) + rawText.length;
+      if (hash === lastSummarizedHash) return;
+      lastSummarizedHash = hash;
+
+      logMsg('AGENT', `Antigravity agent finished response (${rawText.length} chars).`, 'info');
+
+      // Funnel to Butler if voice session is active
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const cleanText = rawText.replace(/```[\s\S]*?```/g, '[code block]').slice(0, 1200);
+        const funnelMessage = `[SYSTEM EVENT: The Antigravity coding agent just finished executing. Here is what was produced: "${cleanText}". As the pair-programming Butler, speak out loud to the user in 1-2 casual, friendly, spoken conversational sentences (ELI5) summarizing what was accomplished. Then ask the user if they want to review it or move to the next task.]`;
+
+        ws.send(JSON.stringify({ text: funnelMessage }));
+        logMsg('BUTLER', 'Funneled response to Butler for casual spoken ELI5 summary.', 'success');
+      }
+    }
+
+    setupChatResponseWatcher();
+
+    logMsg('INIT', 'Gemini Live Voice Client & Butler loop initialized.', 'info');
 
     // Drawer toggle
     function toggleDrawer(forceOpen?: boolean) {
@@ -1492,38 +1635,22 @@ window.addEventListener('DOMContentLoaded', () => {
     });
 
     function buildGatewayUrl(): string {
-      const token =
-        (tokenInput?.value || '').trim() ||
-        localStorage.getItem('agy_voice_token') ||
-        localStorage.getItem('agy_voice_custom_key') ||
-        '';
-      const project = (projectInput?.value || '').trim() || localStorage.getItem('agy_voice_project') || '';
-      const region = (regionInput?.value || '').trim() || localStorage.getItem('agy_voice_region') || 'us-central1';
-
-      const params = new URLSearchParams();
-      if (token) params.set('token', token);
-      if (project) params.set('project', project);
-      if (region) params.set('location', region);
-      const q = params.toString();
-      return q ? `ws://127.0.0.1:50999/ws/live?${q}` : 'ws://127.0.0.1:50999/ws/live';
+      const url = (serviceUrlInput?.value || '').trim() || localStorage.getItem('agy_voice_service_url') || 'ws://127.0.0.1:8000/ws';
+      return url;
     }
 
     // Save config button
     drawer.querySelector('#agy-btn-save-config')?.addEventListener('click', () => {
-      const token = (tokenInput?.value || '').trim();
-      const project = (projectInput?.value || '').trim();
-      const region = (regionInput?.value || 'us-central1').trim();
-
+      const url = buildGatewayUrl();
       try {
-        if (token) localStorage.setItem('agy_voice_token', token);
-        if (project) localStorage.setItem('agy_voice_project', project);
-        if (region) localStorage.setItem('agy_voice_region', region);
-        logMsg(
-          'CONFIG',
-          `Saved Vertex AI settings: project=${project || 'auto'}, region=${region}. Testing gateway...`,
-          'success',
-        );
-        testGatewayConnection();
+        localStorage.setItem('agy_voice_service_url', url);
+        logMsg('CONFIG', `Saved Gemini Live service URL: ${url}`, 'success');
+        if (voiceState !== 'idle') {
+          stopVoiceSession();
+          void startVoiceSession();
+        } else {
+          testGatewayConnection();
+        }
       } catch (e: any) {
         logMsg('CONFIG', 'Failed to save config: ' + e.message, 'error');
       }
@@ -1538,14 +1665,14 @@ window.addEventListener('DOMContentLoaded', () => {
       try {
         logMsg('MIC-TEST', 'Requesting microphone access via getUserMedia...', 'mic');
         const stream = await navigator.mediaDevices.getUserMedia({
-          audio: { channelCount: 1, sampleRate: 24000, echoCancellation: true, noiseSuppression: true },
+          audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true },
         });
         micTestStream = stream;
         const track = stream.getAudioTracks()[0];
         logMsg('MIC-TEST', `Mic access GRANTED! Device: "${track.label}"`, 'success');
 
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        micTestAudioCtx = new AudioContextClass({ sampleRate: 24000 });
+        micTestAudioCtx = new AudioContextClass();
         const src = micTestAudioCtx.createMediaStreamSource(stream);
         const proc = micTestAudioCtx.createScriptProcessor(2048, 1, 1);
 
@@ -1590,57 +1717,147 @@ window.addEventListener('DOMContentLoaded', () => {
 
     function testGatewayConnection() {
       const url = buildGatewayUrl();
-      logMsg('GW-TEST', `Testing connection to ${url.split('?')[0]}...`, 'ws');
+      logMsg('GW-TEST', `Testing connection to ${url}...`, 'ws');
       const testWs = new WebSocket(url);
 
       const start = Date.now();
       testWs.onopen = () => {
-        logMsg(
-          'GW-TEST',
-          `Connected to local proxy in ${Date.now() - start}ms. Waiting for Vertex AI upstream handshake...`,
-          'success',
-        );
-        testWs.send(JSON.stringify({ type: 'ping' }));
+        logMsg('GW-TEST', `Connected to Gemini Live service in ${Date.now() - start}ms! Sending ping...`, 'success');
+        testWs.send(JSON.stringify({ text: 'Ping test from Antigravity Live Voice' }));
       };
       testWs.onmessage = (e) => {
-        logMsg('GW-TEST', `Received frame: ${e.data}`, 'ws');
         try {
-          const parsed = JSON.parse(e.data);
-          if (parsed.type === 'ready') {
-            logMsg(
-              'GW-TEST',
-              `Vertex AI Live API READY! Model: ${parsed.model}, Voice: ${parsed.voice}, Region: ${parsed.location}`,
-              'success',
-            );
-          } else if (parsed.type === 'error') {
-            logMsg('GW-TEST', `Gateway error: ${parsed.error}`, 'error');
+          if (typeof e.data === 'string') {
+            const parsed = JSON.parse(e.data);
+            logMsg('GW-TEST', `Received event: ${parsed.type || 'message'}`, 'info');
+          } else {
+            logMsg('GW-TEST', `Received audio frame (${(e.data as ArrayBuffer).byteLength} bytes)`, 'success');
           }
         } catch (_) {}
       };
       testWs.onerror = (e: any) => {
-        logMsg('GW-TEST', 'WebSocket transport error: ' + (e?.message || 'Check if proxy is running'), 'error');
+        logMsg('GW-TEST', 'WebSocket transport error: ' + (e?.message || 'Check if service is running on port 8000'), 'error');
       };
       testWs.onclose = (e) => {
-        logMsg(
-          'GW-TEST',
-          `WebSocket closed (code: ${e.code}, reason: "${e.reason}")`,
-          e.code === 1000 ? 'info' : 'error',
-        );
+        logMsg('GW-TEST', `Test connection finished (code: ${e.code}).`, 'info');
       };
     }
 
     drawer.querySelector('#agy-btn-test-gw')?.addEventListener('click', () => testGatewayConnection());
 
-    // ─── Voice Audio & WebSocket Session ────────────────────────────────────
+    // ─── Intelligent Hands-Free Vocal Engine (Bandpass + Adaptive Noise Floor) ──
 
     let voiceState: 'idle' | 'connecting' | 'listening' | 'speaking' | 'error' = 'idle';
     let ws: WebSocket | null = null;
     let micStream: MediaStream | null = null;
     let micAudioCtx: AudioContext | null = null;
     let micProcessor: ScriptProcessorNode | null = null;
+
     let playbackAudioCtx: AudioContext | null = null;
-    let nextPlayTime = 0;
-    const activeSources: AudioBufferSourceNode[] = [];
+    let scheduledSources: AudioBufferSourceNode[] = [];
+    let nextStartTime = 0;
+    let lastPlaybackEndTime = 0;
+
+    // VAD & Adaptive Noise Floor State
+    let adaptiveNoiseFloor = 0.015;
+    let isUserSpeaking = false;
+    let lastVocalSpeechTime = 0;
+    let speechFramesCount = 0;
+    const NATURAL_PAUSE_MS = 1100; // 1.1s natural pause to formulate thoughts
+    let activeConvInterval: any = null;
+
+    function getPlaybackContext(): AudioContext {
+      if (!playbackAudioCtx || playbackAudioCtx.state === 'closed') {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        playbackAudioCtx = new AudioContextClass();
+      }
+      if (playbackAudioCtx.state === 'suspended') {
+        void playbackAudioCtx.resume();
+      }
+      return playbackAudioCtx;
+    }
+
+    function playAudioChunk(arrayBuffer: ArrayBuffer) {
+      try {
+        const ctx = getPlaybackContext();
+        const pcmData = new Int16Array(arrayBuffer);
+        if (pcmData.length === 0) return;
+
+        const float32Data = new Float32Array(pcmData.length);
+        for (let i = 0; i < pcmData.length; i++) {
+          float32Data[i] = pcmData[i] / 32768.0;
+        }
+
+        const buffer = ctx.createBuffer(1, float32Data.length, 24000);
+        buffer.getChannelData(0).set(float32Data);
+
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+
+        const now = ctx.currentTime;
+        // Jitter buffer: add 40ms initial lead time on new utterances to avoid micro-gaps/cracking
+        if (nextStartTime < now) {
+          nextStartTime = now + 0.04;
+        }
+        source.start(nextStartTime);
+        nextStartTime += buffer.duration;
+
+        scheduledSources.push(source);
+        source.onended = () => {
+          const idx = scheduledSources.indexOf(source);
+          if (idx > -1) scheduledSources.splice(idx, 1);
+          if (scheduledSources.length === 0) {
+            lastPlaybackEndTime = Date.now();
+            if (voiceState === 'speaking' && !isUserSpeaking) {
+              updateUiState('listening', '🎙️ Listening... (Speak naturally anytime)');
+              logMsg('SESSION', 'Gemini finished speaking. Listening for your next question...', 'info');
+            }
+          }
+        };
+
+        if (voiceState !== 'speaking' && !isUserSpeaking) {
+          updateUiState('speaking', '🔊 Gemini speaking... (Speak to interrupt or Esc)');
+        }
+      } catch (err: any) {
+        logMsg('AUDIO', 'Playback error: ' + err.message, 'error');
+      }
+    }
+
+    function stopAudioPlayback() {
+      for (const s of scheduledSources) {
+        try {
+          s.stop();
+        } catch (_) {}
+      }
+      scheduledSources = [];
+      lastPlaybackEndTime = Date.now();
+      if (playbackAudioCtx) {
+        nextStartTime = playbackAudioCtx.currentTime;
+      }
+    }
+
+    function downsampleBuffer(buffer: Float32Array, inputRate: number, outputRate: number): Float32Array {
+      if (outputRate === inputRate) return buffer;
+      const ratio = inputRate / outputRate;
+      const newLength = Math.round(buffer.length / ratio);
+      const result = new Float32Array(newLength);
+      let offsetResult = 0;
+      let offsetBuffer = 0;
+      while (offsetResult < result.length) {
+        const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+        let accum = 0;
+        let count = 0;
+        for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+          accum += buffer[i];
+          count++;
+        }
+        result[offsetResult] = count > 0 ? accum / count : 0;
+        offsetResult++;
+        offsetBuffer = nextOffsetBuffer;
+      }
+      return result;
+    }
 
     function updateUiState(newState: typeof voiceState, message?: string) {
       voiceState = newState;
@@ -1664,11 +1881,11 @@ window.addEventListener('DOMContentLoaded', () => {
             badge.style.display = 'block';
             break;
           case 'listening':
-            badge.textContent = 'Listening... (Speak)';
+            badge.textContent = '🎙️ Listening... (Speak naturally)';
             badge.style.display = 'block';
             break;
           case 'speaking':
-            badge.textContent = 'Gemini speaking...';
+            badge.textContent = '🔊 Gemini speaking... (Speak to interrupt)';
             badge.style.display = 'block';
             break;
           case 'error':
@@ -1679,135 +1896,138 @@ window.addEventListener('DOMContentLoaded', () => {
       }
     }
 
-    function stopPlayback() {
-      for (const src of activeSources) {
-        try {
-          src.stop();
-        } catch (_) {}
-      }
-      activeSources.length = 0;
-      if (playbackAudioCtx) nextPlayTime = playbackAudioCtx.currentTime;
-      if (voiceState === 'speaking') updateUiState('listening');
-    }
-
-    function playAudioChunk(base64Pcm: string) {
-      if (!playbackAudioCtx) {
-        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        if (!AudioContextClass) return;
-        playbackAudioCtx = new AudioContextClass({ sampleRate: 24000 });
-        nextPlayTime = playbackAudioCtx.currentTime;
-      }
-      if (playbackAudioCtx.state === 'suspended') void playbackAudioCtx.resume();
-
-      try {
-        const binary = atob(base64Pcm);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        const int16 = new Int16Array(bytes.buffer);
-        const float32 = new Float32Array(int16.length);
-        for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
-
-        const audioBuffer = playbackAudioCtx.createBuffer(1, float32.length, 24000);
-        audioBuffer.getChannelData(0).set(float32);
-
-        const source = playbackAudioCtx.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(playbackAudioCtx.destination);
-
-        const now = playbackAudioCtx.currentTime;
-        if (nextPlayTime < now) nextPlayTime = now + 0.02; // 20ms jitter buffer
-
-        source.start(nextPlayTime);
-        nextPlayTime += audioBuffer.duration;
-
-        updateUiState('speaking');
-        activeSources.push(source);
-
-        source.onended = () => {
-          const idx = activeSources.indexOf(source);
-          if (idx !== -1) activeSources.splice(idx, 1);
-          if (activeSources.length === 0 && voiceState === 'speaking') {
-            updateUiState('listening');
-          }
-        };
-      } catch (e: any) {
-        logMsg('AUDIO', 'Audio decode error: ' + e.message, 'error');
-      }
-    }
-
     async function startVoiceSession() {
       try {
-        updateUiState('connecting', 'Starting microphone...');
-        logMsg('SESSION', 'Starting live voice session...', 'info');
+        stopAudioPlayback();
+        updateUiState('connecting', 'Connecting to Gemini Live...');
+        logMsg('SESSION', 'Starting hands-free live voice session...', 'info');
 
-        // Request microphone access
-        logMsg('MIC', 'Requesting microphone stream (24kHz mono)...', 'mic');
-        micStream = await navigator.mediaDevices.getUserMedia({
-          audio: { channelCount: 1, sampleRate: 24000, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        });
-        logMsg('MIC', 'Microphone stream acquired successfully.', 'success');
+        // Request microphone access with aggressive echo cancellation and noise suppression
+        if (!micStream) {
+          logMsg('MIC', 'Opening microphone with hardware noise suppression & echo cancellation...', 'mic');
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              channelCount: 1,
+              sampleRate: 16000,
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+          });
+          logMsg('MIC', 'Microphone stream acquired.', 'success');
+        }
 
-        // Connect to local proxy VoiceGateway
-        const wsUrl = buildGatewayUrl();
+        // Connect to Gemini Live service on port 8000
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          const baseWsUrl = buildGatewayUrl();
+          const initialConvId = getActiveConversationId();
+          const wsUrl = initialConvId
+            ? `${baseWsUrl}${baseWsUrl.includes('?') ? '&' : '?'}conversation_id=${encodeURIComponent(initialConvId)}`
+            : baseWsUrl;
+          logMsg('WS', `Connecting to Gemini Live backend (${wsUrl})...`, 'ws');
+          ws = new WebSocket(wsUrl);
+          ws.binaryType = 'arraybuffer';
 
-        logMsg('WS', `Connecting to Voice Gateway (${wsUrl.split('?')[0]})...`, 'ws');
-        ws = new WebSocket(wsUrl);
-        ws.binaryType = 'arraybuffer';
-
-        ws.onopen = () => {
-          logMsg('WS', 'Connected to local proxy. Handshaking with Vertex AI upstream...', 'ws');
-          updateUiState('connecting', 'Connecting to Vertex AI...');
-        };
-
-        ws.onmessage = (event) => {
-          try {
-            const msg = JSON.parse(event.data);
-            if (msg.type === 'ready') {
-              logMsg(
-                'UPSTREAM',
-                `Vertex AI Live session READY! Voice: ${msg.voice}, Model: ${msg.model}, Region: ${msg.location}`,
-                'success',
-              );
-              updateUiState('listening');
-              startMicAudioPipeline();
-            } else if (msg.type === 'interrupted') {
-              logMsg('VAD', 'User interrupted model speech (barge-in).', 'vad');
-              stopPlayback();
-            } else if (msg.type === 'audio' && msg.data) {
-              playAudioChunk(msg.data);
-            } else if (msg.type === 'text' && msg.text) {
-              logMsg('MODEL', msg.text, 'model');
-            } else if (msg.type === 'turn_complete') {
-              if (activeSources.length === 0) updateUiState('listening');
-            } else if (msg.type === 'error') {
-              logMsg('ERROR', `Gateway reported error: ${msg.error}`, 'error');
-              updateUiState('error', msg.error);
-              toggleDrawer(true);
-            } else if (msg.type === 'closed') {
-              logMsg(
-                'WS',
-                `Upstream closed (code: ${msg.code}, reason: "${msg.reason}")`,
-                msg.code === 1000 ? 'info' : 'error',
-              );
-              toggleDrawer(true);
+          const handleWsMessage = (event: MessageEvent) => {
+            if (event.data instanceof ArrayBuffer) {
+              // Downstream neural audio chunk from Gemini Live
+              playAudioChunk(event.data);
+            } else if (typeof event.data === 'string') {
+              try {
+                const msg = JSON.parse(event.data);
+                if (msg.type === 'interaction_status') {
+                  if (msg.status === 'IN_PROGRESS') {
+                    logMsg('STATUS', 'Gemini thinking...', 'info');
+                  } else if (msg.status === 'REQUIRES_ACTION') {
+                    if (voiceState !== 'speaking' && scheduledSources.length === 0) {
+                      updateUiState('listening', '🎙️ Listening... (Speak naturally anytime)');
+                    }
+                  }
+                } else if (msg.type === 'interrupted') {
+                  logMsg('STATUS', 'Session interrupted.', 'vad');
+                  stopAudioPlayback();
+                } else if (msg.type === 'turn_complete') {
+                  logMsg('STATUS', 'Turn complete.', 'info');
+                } else if (msg.type === 'user' && msg.text) {
+                  renderTranscriptLine('User', msg.text);
+                } else if ((msg.type === 'model' || msg.type === 'gemini') && msg.text) {
+                  renderTranscriptLine('Gemini', msg.text);
+                } else if (msg.type === 'error') {
+                  logMsg('ERROR', `Server reported error: ${msg.error}`, 'error');
+                  updateUiState('error', msg.error);
+                  toggleDrawer(true);
+                }
+              } catch (e: any) {
+                logMsg('WS', 'Error parsing message: ' + e.message, 'error');
+              }
             }
-          } catch (e: any) {
-            logMsg('WS', 'Error parsing message: ' + e.message, 'error');
-          }
-        };
+          };
 
-        ws.onerror = (err: any) => {
-          logMsg('WS', 'WebSocket transport error: ' + (err?.message || 'Check proxy status'), 'error');
-          updateUiState('error', 'Connection failed');
-          toggleDrawer(true);
-        };
+          ws.onmessage = handleWsMessage;
 
-        ws.onclose = (e) => {
-          logMsg('WS', `Connection closed (code: ${e.code}, reason: "${e.reason}")`, 'info');
-          if (voiceState !== 'error') {
-            stopVoiceSession();
-          }
-        };
+          ws.onopen = () => {
+            logMsg('WS', 'Connected to Gemini Live backend!', 'success');
+            updateUiState('listening', '🎙️ Listening... (Speak naturally anytime)');
+            startMicAudioPipeline();
+
+            // Pin Butler exclusively to the active chat session and monitor for tab switches
+            let currentTrackedConvId = initialConvId || getActiveConversationId();
+            if (currentTrackedConvId) {
+              ws.send(JSON.stringify({ type: 'set_active_conversation', conversation_id: currentTrackedConvId }));
+              logMsg('BUTLER', `Pinned Butler to active chat: ${currentTrackedConvId}`, 'info');
+            }
+
+            if (activeConvInterval) clearInterval(activeConvInterval);
+            activeConvInterval = setInterval(() => {
+              const latestId = getActiveConversationId();
+              if (latestId && latestId !== currentTrackedConvId) {
+                currentTrackedConvId = latestId;
+                logMsg('BUTLER', `Active chat tab switched to: ${latestId}. Cleanly resetting Gemini Live session...`, 'info');
+                stopAudioPlayback();
+                if (ws) {
+                  try {
+                    ws.onclose = null;
+                    ws.onerror = null;
+                    ws.close();
+                  } catch (_) {}
+                  ws = null;
+                }
+                const newBaseUrl = buildGatewayUrl();
+                const newWsUrl = `${newBaseUrl}${newBaseUrl.includes('?') ? '&' : '?'}conversation_id=${encodeURIComponent(latestId)}`;
+                logMsg('WS', `Reconnecting to Gemini Live for tab ${latestId}...`, 'ws');
+                ws = new WebSocket(newWsUrl);
+                ws.binaryType = 'arraybuffer';
+                ws.onopen = () => {
+                  logMsg('WS', `Connected to clean Gemini Live session for tab: ${latestId}`, 'success');
+                  ws.send(JSON.stringify({ type: 'set_active_conversation', conversation_id: latestId }));
+                };
+                ws.onmessage = handleWsMessage;
+                ws.onclose = () => {
+                  logMsg('WS', 'Session disconnected.', 'ws');
+                };
+                ws.onerror = (e) => {
+                  logMsg('ERROR', 'WebSocket error during reconnect.', 'error');
+                };
+              }
+            }, 300);
+          };
+
+          ws.onerror = (err: any) => {
+            logMsg('WS', 'WebSocket error: ' + (err?.message || 'Check if service is running on port 8000'), 'error');
+            updateUiState('error', 'Connection failed');
+            toggleDrawer(true);
+          };
+
+          ws.onclose = (e) => {
+            logMsg('WS', `Connection closed (code: ${e.code}, reason: "${e.reason}")`, 'info');
+            if (voiceState !== 'error') {
+              stopVoiceSession();
+            }
+          };
+        } else {
+          updateUiState('listening', '🎙️ Listening... (Speak naturally anytime)');
+          startMicAudioPipeline();
+        }
       } catch (err: any) {
         logMsg('MIC', `Mic access failed: ${err.name} - ${err.message}`, 'error');
         updateUiState('error', err.message || 'Mic access denied');
@@ -1817,53 +2037,125 @@ window.addEventListener('DOMContentLoaded', () => {
 
     function startMicAudioPipeline() {
       if (!micStream) return;
+      if (micProcessor) return; // Already running
+
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioContextClass) return;
 
-      micAudioCtx = new AudioContextClass({ sampleRate: 24000 });
+      micAudioCtx = new AudioContextClass();
       const sourceNode = micAudioCtx.createMediaStreamSource(micStream);
+
+      // 1. Highpass filter: cuts music sub-bass, kick drum, table thuds < 200 Hz
+      const highpass = micAudioCtx.createBiquadFilter();
+      highpass.type = 'highpass';
+      highpass.frequency.value = 200;
+      highpass.Q.value = 0.707;
+
+      // 2. Lowpass filter: cuts cymbals, piercing highs, background music synths > 3400 Hz
+      const lowpass = micAudioCtx.createBiquadFilter();
+      lowpass.type = 'lowpass';
+      lowpass.frequency.value = 3400;
+      lowpass.Q.value = 0.707;
+
+      sourceNode.connect(highpass);
+      highpass.connect(lowpass);
+
       micProcessor = micAudioCtx.createScriptProcessor(2048, 1, 1);
+      lowpass.connect(micProcessor);
+      micProcessor.connect(micAudioCtx.destination);
 
       micProcessor.onaudioprocess = (e) => {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
         const input = e.inputBuffer.getChannelData(0);
 
-        // RMS VAD
+        // Acoustic Echo Cancellation / Gating:
+        // While Butler is speaking or within 350ms reverb cooldown, mute mic completely
+        // so the speaker output never hits the mic and causes self-interruption!
+        const isButlerSpeaking = voiceState === 'speaking' || scheduledSources.length > 0;
+        const inEchoCooldown = Date.now() - lastPlaybackEndTime < 350;
+
+        if (isButlerSpeaking || inEchoCooldown) {
+          speechFramesCount = 0;
+          isUserSpeaking = false;
+          return;
+        }
+
+        // RMS of vocal bandpass filtered audio
         let sum = 0;
         for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
         const rms = Math.sqrt(sum / input.length);
 
-        // Update live meter if drawer is open
+        // Dynamically adapt noise floor during ambient sounds / room music
+        if (!isUserSpeaking) {
+          adaptiveNoiseFloor = adaptiveNoiseFloor * 0.96 + rms * 0.04;
+        }
+
+        // True vocal speech threshold must rise above the music/room noise floor
+        const speechThreshold = Math.max(0.025, adaptiveNoiseFloor * 2.3);
+
+        // Live visual meter
         if (drawer.style.display === 'flex' && meterInner) {
           const pct = Math.min(100, Math.round(rms * 400));
           meterInner.style.width = pct + '%';
-          if (meterVal) meterVal.textContent = pct + '%';
+          if (meterVal) meterVal.textContent = pct + '% (Floor: ' + Math.round(adaptiveNoiseFloor * 400) + '%)';
         }
 
-        // Barge-in check
-        if (rms > 0.04 && voiceState === 'speaking') {
-          logMsg('VAD', `Barge-in triggered locally (RMS: ${rms.toFixed(3)})`, 'vad');
-          stopPlayback();
-          ws.send(JSON.stringify({ type: 'interrupt' }));
+        const now = Date.now();
+
+        // Detect intentional vocal speech
+        if (rms > speechThreshold) {
+          speechFramesCount++;
+          if (speechFramesCount >= 2) { // 2 consecutive frames confirms real speech, not clicks
+            lastVocalSpeechTime = now;
+
+            // Natural Vocal Barge-In: If Gemini is speaking and you speak, interrupt Gemini!
+            if (voiceState === 'speaking' || scheduledSources.length > 0) {
+              logMsg('BARGE-IN', 'Voice barge-in detected! Silencing Gemini playback...', 'vad');
+              stopAudioPlayback();
+              updateUiState('listening', '🎙️ Listening to you...');
+            }
+
+            if (!isUserSpeaking) {
+              isUserSpeaking = true;
+              logMsg('VAD', `Speech detected (RMS: ${rms.toFixed(3)}, Floor: ${adaptiveNoiseFloor.toFixed(3)})`, 'vad');
+              updateUiState('listening', '🎙️ Listening to you...');
+            }
+          }
+        } else {
+          speechFramesCount = Math.max(0, speechFramesCount - 1);
         }
 
-        // Convert Float32 to Int16 PCM
-        const pcm16 = new Int16Array(input.length);
-        for (let i = 0; i < input.length; i++) {
-          const s = Math.max(-1, Math.min(1, input[i]));
-          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-        }
+        // Stream audio chunks while speaking or active turn
+        if (isUserSpeaking) {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            const downsampled = downsampleBuffer(input, micAudioCtx.sampleRate, 16000);
+            const pcm16 = new Int16Array(downsampled.length);
+            for (let i = 0; i < downsampled.length; i++) {
+              const s = Math.max(-1, Math.min(1, downsampled[i]));
+              pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+            }
+            ws.send(pcm16.buffer);
+          }
 
-        ws.send(pcm16.buffer);
+          // Natural Pause Detection: When you pause for 1.1s, Gemini automatically answers!
+          if (now - lastVocalSpeechTime > NATURAL_PAUSE_MS) {
+            isUserSpeaking = false;
+            logMsg('TURN', `Natural pause (${NATURAL_PAUSE_MS}ms) detected. Gemini answering...`, 'info');
+            updateUiState('speaking', '⏳ Gemini thinking...');
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              const silence = new Int16Array(1600); // 100ms silence frame
+              ws.send(silence.buffer);
+            }
+          }
+        }
       };
 
-      sourceNode.connect(micProcessor);
-      micProcessor.connect(micAudioCtx.destination);
-      logMsg('MIC', 'Real-time 24kHz audio capture streaming to Gemini Live.', 'success');
+      logMsg('MIC', 'Vocal bandpass (200-3400Hz) & adaptive noise tracker active.', 'success');
+      logMsg('TIP', 'Pro-tip: For total silence of loud music, enable "Voice Isolation" from your Mac menu bar mic icon.', 'info');
     }
 
     function stopVoiceSession() {
-      stopPlayback();
+      isUserSpeaking = false;
+      stopAudioPlayback();
 
       if (micProcessor) {
         try {
@@ -1886,11 +2178,9 @@ window.addEventListener('DOMContentLoaded', () => {
         micStream = null;
       }
 
-      if (playbackAudioCtx) {
-        try {
-          void playbackAudioCtx.close();
-        } catch (_) {}
-        playbackAudioCtx = null;
+      if (activeConvInterval) {
+        clearInterval(activeConvInterval);
+        activeConvInterval = null;
       }
 
       if (ws) {
@@ -1906,31 +2196,46 @@ window.addEventListener('DOMContentLoaded', () => {
       logMsg('SESSION', 'Live voice session stopped.', 'info');
     }
 
-    function toggleVoice() {
+    function handleVoiceTrigger() {
       if (voiceState === 'idle') {
         void startVoiceSession();
-      } else if (voiceState === 'error') {
-        // Clear error and restart
-        stopVoiceSession();
-        void startVoiceSession();
+      } else if (voiceState === 'speaking') {
+        // Tap mic to silence immediately
+        logMsg('INTERRUPT', 'Silenced playback manually.', 'vad');
+        stopAudioPlayback();
+        updateUiState('listening', '🎙️ Listening... (Speak naturally)');
       } else {
         stopVoiceSession();
       }
     }
 
-    micBtn.addEventListener('click', toggleVoice);
+    micBtn.addEventListener('click', handleVoiceTrigger);
 
-    // Hotkey: Cmd+Shift+V / Ctrl+Shift+V for Voice
-    // Hotkey: Cmd+Shift+D / Ctrl+Shift+D for Debug Console
-    window.addEventListener('keydown', (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === 'KeyV') {
-        e.preventDefault();
-        toggleVoice();
-      } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === 'KeyD') {
-        e.preventDefault();
-        toggleDrawer();
-      }
-    });
+    // Global Keybindings:
+    // - Cmd+Shift+V / Ctrl+Shift+V: Hands-Free Voice Toggle
+    // - Cmd+Shift+D / Ctrl+Shift+D: Drawer Toggle
+    // - Escape (during playback): Silence Gemini immediately
+    window.addEventListener(
+      'keydown',
+      (e: KeyboardEvent) => {
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === 'KeyV') {
+          e.preventDefault();
+          e.stopPropagation();
+          handleVoiceTrigger();
+        } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === 'KeyD') {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleDrawer();
+        } else if (e.code === 'Escape' && (voiceState === 'speaking' || scheduledSources.length > 0)) {
+          e.preventDefault();
+          e.stopPropagation();
+          logMsg('INTERRUPT', 'Silenced playback via Escape key.', 'vad');
+          stopAudioPlayback();
+          updateUiState('listening', '🎙️ Listening... (Speak naturally)');
+        }
+      },
+      true,
+    );
   }
 
   // Efficient DOM tracking via MutationObserver — instead of setInterval

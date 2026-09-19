@@ -1,18 +1,17 @@
 /**
- * Real-time Bidirectional Voice Gateway for Antigravity.
- * Proxies local WebSocket connections strictly to Google Cloud Vertex AI (LlmBidiService / BidiGenerateContent).
- * Supports PCM 16-bit 24kHz bidirectional streaming with barge-in interruption.
- * Built with zero external dependencies using Node.js native HTTPS/TLS and RFC-6455 framing.
+ * Real-time Voice Gateway for Antigravity.
+ * Powered by Google Cloud Vertex AI REST (generateContent) using zero-friction direct API key authorization.
+ * Supports rapid turn-taking audio streaming and conversation with Gemini 3.6/3.7 Flash models.
+ * Built with zero external dependencies using Node.js native HTTPS/TLS and RFC-6455 WebSocket framing.
  */
 import * as http from 'http';
 import * as net from 'net';
 import * as tls from 'tls';
 import { EventEmitter } from 'events';
-export declare const DEFAULT_LOCATION = "us-central1";
-export declare const DEFAULT_MODEL = "gemini-2.0-flash";
-export declare const DEFAULT_VOICE = "Puck";
-export declare const VERTEX_BIDI_PATH = "/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent";
+export declare const DEFAULT_MODELS: string[];
+export declare const DEFAULT_API_KEY = "YOUR_API_KEY_HERE";
 export interface VoiceConfig {
+    apiKey?: string;
     projectId?: string;
     location?: string;
     token?: string;
@@ -29,8 +28,18 @@ export interface VoiceGatewayOptions {
     systemInstruction?: string;
 }
 /**
+ * Packs 16-bit PCM buffer into standard WAV (RIFF header + PCM payload).
+ */
+export declare function pcmToWav(pcmBuffer: Buffer, sampleRate?: number, numChannels?: number, bitDepth?: number): Buffer;
+/**
+ * Execute a POST request to Vertex AI generateContent with automatic model fallback.
+ */
+export declare function executeVertexRest(payload: any, apiKey: string, candidateModels?: string[]): Promise<{
+    text: string;
+    model: string;
+}>;
+/**
  * Lightweight RFC-6455 WebSocket connection over a net.Socket / tls.TLSSocket.
- * Supports both server mode (incoming from frontend) and client mode (outgoing to Vertex AI).
  */
 export declare class LocalWsConnection extends EventEmitter {
     socket: net.Socket | tls.TLSSocket;
@@ -47,7 +56,6 @@ export declare class VoiceGateway {
     private getApiKey;
     private defaultVoice;
     private defaultModel;
-    private defaultLocation;
     private systemInstruction;
     private activeClients;
     private activeGcpContext;
@@ -63,7 +71,6 @@ export declare class VoiceGateway {
     handleUpgrade(req: http.IncomingMessage, socket: net.Socket, _head: Buffer): boolean;
     close(): void;
     private handleClientSession;
-    private sendAudioChunkToUpstream;
 }
 export declare function attachVoiceGateway(server: http.Server, getApiKey: () => string | null, options?: Partial<VoiceGatewayOptions>): VoiceGateway;
 //# sourceMappingURL=voiceGateway.d.ts.map

@@ -531,8 +531,10 @@ export async function deploy(options = {}, operations = {}) {
     if (nextState) fs.writeFileSync(stateCandidate, JSON.stringify(nextState, null, 2) + '\n');
     const replacements = [
       { target: files.archive, candidate: candidate.archive },
-      { target: files.unpacked, candidate: candidate.unpacked },
     ];
+    if (hashDirectory(files.unpacked) !== hashDirectory(candidate.unpacked)) {
+      replacements.push({ target: files.unpacked, candidate: candidate.unpacked });
+    }
     // Fingerprint/backup the binary always; replace it only for an explicit patch or restore.
     if (options.restore || info.plan?.bytes) replacements.push({ target: files.binary, candidate: candidate.binary });
     replacements.push({ target: path.join(meta, 'state.json'), candidate: nextState ? stateCandidate : null });

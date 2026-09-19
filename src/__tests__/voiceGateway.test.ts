@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { VoiceGateway, encodeFrame, LocalWsConnection } from '../proxy/voiceGateway';
+import { VoiceGateway, encodeFrame, LocalWsConnection, pcmToWav } from '../proxy/voiceGateway';
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 
@@ -120,4 +120,20 @@ describe('VoiceGateway', () => {
     expect(receivedMessage).toBe('test payload');
     conn.close();
   });
+
+  it('correctly converts PCM buffer to valid WAV buffer with header', () => {
+    const pcmData = Buffer.alloc(4800, 0x12); // dummy 16-bit PCM samples
+    const wav = pcmToWav(pcmData, 24000, 1, 16);
+
+    expect(wav.length).toBe(4800 + 44);
+    expect(wav.subarray(0, 4).toString()).toBe('RIFF');
+    expect(wav.subarray(8, 12).toString()).toBe('WAVE');
+    expect(wav.subarray(12, 16).toString()).toBe('fmt ');
+    expect(wav.readUInt32LE(24)).toBe(24000); // sample rate
+    expect(wav.readUInt16LE(22)).toBe(1); // num channels
+    expect(wav.readUInt16LE(34)).toBe(16); // bit depth
+    expect(wav.subarray(36, 40).toString()).toBe('data');
+    expect(wav.readUInt32LE(40)).toBe(4800); // data length
+  });
 });
+
