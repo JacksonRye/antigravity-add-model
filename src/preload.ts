@@ -2119,8 +2119,8 @@ window.addEventListener('DOMContentLoaded', () => {
           if (speechFramesCount >= 2) { // 2 consecutive frames confirms real speech, not clicks
             lastVocalSpeechTime = now;
 
-            // Natural Vocal Barge-In: If Gemini is speaking and you speak, interrupt Gemini!
-            if (voiceState === 'speaking' || scheduledSources.length > 0) {
+            // Natural Vocal Barge-In: Only interrupt if Gemini is actively playing audio through speakers!
+            if (scheduledSources.length > 0) {
               logMsg('BARGE-IN', 'Voice barge-in detected! Silencing Gemini playback...', 'vad');
               stopAudioPlayback();
               updateUiState('listening', '🎙️ Listening to you...');
@@ -2158,7 +2158,7 @@ window.addEventListener('DOMContentLoaded', () => {
               ws.send(silence.buffer);
             }
 
-            // Watchdog: If Gemini does not send audio or turn_complete within 2.5s, cleanly reset to listening
+            // Watchdog: If Gemini does not send audio or turn_complete within 12s, cleanly reset to listening
             if (pauseThinkingTimeout) clearTimeout(pauseThinkingTimeout);
             pauseThinkingTimeout = setTimeout(() => {
               if (scheduledSources.length === 0 && voiceState !== 'idle') {
@@ -2166,7 +2166,7 @@ window.addEventListener('DOMContentLoaded', () => {
                 updateUiState('listening', '🎙️ Listening... (Speak naturally)');
               }
               pauseThinkingTimeout = null;
-            }, 2500);
+            }, 12000);
           }
         }
       };
