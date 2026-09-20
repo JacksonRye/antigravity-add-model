@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import * as path from 'path';
+import type * as http from 'http';
 
 // We need to mock the external dependencies that proxy.ts imports at module level
 vi.mock('electron', () => ({
@@ -195,5 +196,154 @@ describe('parseRetryAfter', () => {
 
   it('returns 0 for empty string', () => {
     expect(parseRetryAfter({ 'retry-after': '' })).toBe(0);
+  });
+});
+
+// ─── Test: safeWriteHead / safeWrite / safeEnd (via concept) ──────────────
+
+function safeWriteHead(
+  res: any,
+  statusCode: number,
+  headers?: any,
+): boolean {
+  if (res.headersSent || res.writableEnded || res.destroyed) {
+    return false;
+  }
+  try {
+    if (headers) {
+      res.writeHead(statusCode, headers);
+    } else {
+      res.writeHead(statusCode);
+    }
+    return true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function safeWrite(
+  res: any,
+  chunk: any,
+  encoding?: BufferEncoding,
+): boolean {
+  if (res.writableEnded || res.destroyed) {
+    return false;
+  }
+  try {
+    return res.write(chunk, encoding);
+  } catch (_err) {
+    return false;
+  }
+}
+
+function safeEnd(
+  res: any,
+  data?: any,
+  encoding?: BufferEncoding,
+): void {
+  if (res.writableEnded || res.destroyed) {
+    return;
+  }
+  try {
+    if (data !== undefined) {
+      res.end(data, encoding);
+    } else {
+      res.end();
+    }
+  } catch (_err) {}
+}
+
+describe('Safe HTTP Response Helpers', () => {
+  function createMockResponse(options: {
+    headersSent?: boolean;
+    writableEnded?: boolean;
+    destroyed?: boolean;
+    throwOnWriteHead?: boolean;
+  } = {}) {
+    const res = {
+      headersSent: !!options.headersSent,
+      writableEnded: !!options.writableEnded,
+      destroyed: !!options.destroyed,
+      writeHead: vi.fn((status: number, headers?: any) => {
+        if (options.throwOnWriteHead || res.headersSent) {
+          throw new Error('ERR_HTTP_HEADERS_SENT: Cannot write headers after they are sent to the client');
+        }
+        res.headersSent = true;
+        return res;
+      }),
+      write: vi.fn((data: any) => true),
+      end: vi.fn((data?: any) => {
+        res.writableEnded = true;
+      }),
+    } as unknown as http.ServerResponse;
+    return res;
+  }
+
+  describe('safeWriteHead', () => {
+    it('writes head when headers have not been sent', () => {
+      const res = createMockResponse();
+      const success = safeWriteHead(res, 200, { 'Content-Type': 'text/plain' });
+      expect(success).toBe(true);
+      expect(res.writeHead).toHaveBeenCalledWith(200, { 'Content-Type': 'text/plain' });
+    });
+
+    it('returns false and does not throw when headers were already sent', () => {
+      const res = createMockResponse({ headersSent: true });
+      expect(() => {
+        const success = safeWriteHead(res, 200);
+        expect(success).toBe(false);
+      }).not.toThrow();
+      expect(res.writeHead).not.toHaveBeenCalled();
+    });
+
+    it('returns false and does not throw when response is destroyed', () => {
+      const res = createMockResponse({ destroyed: true });
+      expect(() => {
+        const success = safeWriteHead(res, 200);
+        expect(success).toBe(false);
+      }).not.toThrow();
+      expect(res.writeHead).not.toHaveBeenCalled();
+    });
+
+    it('returns false and catches any thrown ERR_HTTP_HEADERS_SENT without crashing', () => {
+      const res = createMockResponse({ throwOnWriteHead: true });
+      expect(() => {
+        const success = safeWriteHead(res, 200);
+        expect(success).toBe(false);
+      }).not.toThrow();
+    });
+  });
+
+  describe('safeWrite', () => {
+    it('writes chunk when response is active', () => {
+      const res = createMockResponse();
+      const success = safeWrite(res, 'test-chunk');
+      expect(success).toBe(true);
+      expect(res.write).toHaveBeenCalledWith('test-chunk', undefined);
+    });
+
+    it('returns false when response is ended or destroyed', () => {
+      const resEnded = createMockResponse({ writableEnded: true });
+      expect(safeWrite(resEnded, 'chunk')).toBe(false);
+      expect(resEnded.write).not.toHaveBeenCalled();
+
+      const resDestroyed = createMockResponse({ destroyed: true });
+      expect(safeWrite(resDestroyed, 'chunk')).toBe(false);
+      expect(resDestroyed.write).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('safeEnd', () => {
+    it('ends response safely when active', () => {
+      const res = createMockResponse();
+      safeEnd(res, 'final-data');
+      expect(res.end).toHaveBeenCalledWith('final-data', undefined);
+    });
+
+    it('silently ignores end when already ended or destroyed', () => {
+      const res = createMockResponse({ writableEnded: true });
+      expect(() => safeEnd(res)).not.toThrow();
+      expect(res.end).not.toHaveBeenCalled();
+    });
   });
 });

@@ -30,6 +30,19 @@ if (!gotTheLock) {
   process.exit(0);
 }
 
+// ─── Global Error Handlers ──────────────────────────────────────────────────
+
+process.on('uncaughtException', (err: any) => {
+  if (
+    err?.code === 'ERR_HTTP_HEADERS_SENT' ||
+    (typeof err?.message === 'string' && err.message.includes('Cannot write headers after they are sent'))
+  ) {
+    log.warn('[Main] Suppressed ERR_HTTP_HEADERS_SENT in main process:', err?.message || err);
+    return;
+  }
+  log.error('[Main] Uncaught Exception:', err);
+});
+
 // ─── State ─────────────────────────────────────────────────────────────────
 
 let storageManager: StorageManager;

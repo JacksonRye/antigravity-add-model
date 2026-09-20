@@ -58,6 +58,15 @@ if (!gotTheLock) {
     electron_1.app.quit();
     process.exit(0);
 }
+// ─── Global Error Handlers ──────────────────────────────────────────────────
+process.on('uncaughtException', (err) => {
+    if (err?.code === 'ERR_HTTP_HEADERS_SENT' ||
+        (typeof err?.message === 'string' && err.message.includes('Cannot write headers after they are sent'))) {
+        main_1.default.warn('[Main] Suppressed ERR_HTTP_HEADERS_SENT in main process:', err?.message || err);
+        return;
+    }
+    main_1.default.error('[Main] Uncaught Exception:', err);
+});
 // ─── State ─────────────────────────────────────────────────────────────────
 let storageManager;
 let settingsService;

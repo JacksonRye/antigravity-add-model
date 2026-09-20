@@ -41,6 +41,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.safeWriteHead = safeWriteHead;
+exports.safeWrite = safeWrite;
+exports.safeEnd = safeEnd;
 exports.getGoogleApiKey = getGoogleApiKey;
 exports.startProxy = startProxy;
 exports.stopProxy = stopProxy;
@@ -51,6 +54,53 @@ const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const electron_1 = require("electron");
 const electron_log_1 = __importDefault(require("electron-log"));
+// ─── Safe HTTP Response Helpers ──────────────────────────────────────────
+function safeWriteHead(res, statusCode, headers) {
+    if (res.headersSent || res.writableEnded || res.destroyed) {
+        return false;
+    }
+    try {
+        if (headers) {
+            res.writeHead(statusCode, headers);
+        }
+        else {
+            res.writeHead(statusCode);
+        }
+        return true;
+    }
+    catch (err) {
+        electron_log_1.default.warn('[Proxy] safeWriteHead suppressed error:', err.message);
+        return false;
+    }
+}
+function safeWrite(res, chunk, encoding) {
+    if (res.writableEnded || res.destroyed) {
+        return false;
+    }
+    try {
+        return res.write(chunk, encoding);
+    }
+    catch (err) {
+        electron_log_1.default.debug('[Proxy] safeWrite suppressed error:', err.message);
+        return false;
+    }
+}
+function safeEnd(res, data, encoding) {
+    if (res.writableEnded || res.destroyed) {
+        return;
+    }
+    try {
+        if (data !== undefined) {
+            res.end(data, encoding);
+        }
+        else {
+            res.end();
+        }
+    }
+    catch (err) {
+        electron_log_1.default.debug('[Proxy] safeEnd suppressed error:', err.message);
+    }
+}
 // ─── Imports ──────────────────────────────────────────────────────────────
 let server = null;
 let proxyPort = 0;
@@ -203,6 +253,9 @@ function proxyToGoogle(req, res, reqBody) {
     if (shouldBufferAndModify) {
         delete headers['accept-encoding'];
     }
+    if (res.writableEnded || res.destroyed) {
+        return;
+    }
     const options = {
         method: req.method,
         headers: headers,
@@ -210,17 +263,23 @@ function proxyToGoogle(req, res, reqBody) {
     const proxyReq = https.request(parsedUrl, options, (proxyRes) => {
         // P0-5: Timeout for Google proxy requests (60s)
         proxyReq.setTimeout(60000, () => {
+            cleanupClientClose();
             electron_log_1.default.error('[Proxy] Google proxy request timed out after 60s');
             proxyReq.destroy();
-            if (!res.headersSent) {
-                res.writeHead(504, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: { message: 'Google API request timed out' } }));
+            if (safeWriteHead(res, 504, { 'Content-Type': 'application/json' })) {
+                safeEnd(res, JSON.stringify({ error: { message: 'Google API request timed out' } }));
+            }
+            else {
+                safeEnd(res);
             }
         });
         if (shouldBufferAndModify) {
             const responseChunks = [];
             proxyRes.on('data', (chunk) => responseChunks.push(chunk));
             proxyRes.on('end', () => {
+                cleanupClientClose();
+                if (res.writableEnded || res.destroyed)
+                    return;
                 const fullResBody = Buffer.concat(responseChunks);
                 let text;
                 const encoding = proxyRes.headers['content-encoding'];
@@ -247,23 +306,43 @@ function proxyToGoogle(req, res, reqBody) {
                 delete modifiedHeaders['content-encoding'];
                 const modifiedBuffer = Buffer.from(text, 'utf-8');
                 modifiedHeaders['content-length'] = String(modifiedBuffer.length);
-                res.writeHead(proxyRes.statusCode || 200, modifiedHeaders);
-                res.end(modifiedBuffer);
+                if (safeWriteHead(res, proxyRes.statusCode || 200, modifiedHeaders)) {
+                    safeEnd(res, modifiedBuffer);
+                }
+                else {
+                    safeEnd(res);
+                }
             });
         }
         else {
-            res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-            proxyRes.pipe(res);
+            if (safeWriteHead(res, proxyRes.statusCode || 200, proxyRes.headers)) {
+                proxyRes.pipe(res);
+                proxyRes.on('end', cleanupClientClose);
+            }
+            else {
+                cleanupClientClose();
+                proxyRes.destroy();
+            }
         }
     });
-    proxyReq.on('error', (err) => {
-        electron_log_1.default.error('[Proxy] Google Forwarding Error:', err);
-        if (!res.headersSent && !res.writableEnded) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: { message: 'Proxy forwarding failed: ' + err.message } }));
+    const onClientClose = () => {
+        try {
+            proxyReq.destroy();
         }
-        else if (!res.writableEnded) {
-            res.end();
+        catch (_) { }
+    };
+    res.once('close', onClientClose);
+    const cleanupClientClose = () => {
+        res.removeListener('close', onClientClose);
+    };
+    proxyReq.on('error', (err) => {
+        cleanupClientClose();
+        electron_log_1.default.error('[Proxy] Google Forwarding Error:', err);
+        if (safeWriteHead(res, 500, { 'Content-Type': 'application/json' })) {
+            safeEnd(res, JSON.stringify({ error: { message: 'Proxy forwarding failed: ' + err.message } }));
+        }
+        else {
+            safeEnd(res);
         }
     });
     if (reqBody) {
@@ -349,6 +428,10 @@ function parseRetryAfter(headers) {
     return 0;
 }
 function handleCustomModelRequest(res, model, geminiBody, isStream, retryCount = 0) {
+    if (res.writableEnded || res.destroyed) {
+        electron_log_1.default.warn(`[Proxy] Dropping request for ${model.name} because client connection is already closed/destroyed`);
+        return;
+    }
     // P3-18: Configurable max retries per model (default 3, min 0, max 5)
     const MAX_RETRIES = Math.min(Math.max(model.maxRetries ?? 3, 0), 5);
     const REQUEST_TIMEOUT_MS = model.timeout || 120000;
@@ -478,13 +561,13 @@ function handleCustomModelRequest(res, model, geminiBody, isStream, retryCount =
     electron_log_1.default.info(`[Proxy] Routing ${model.name} to ${model.provider} (${model.apiUrl}) (isStream: ${!!isStream})${retryCount > 0 ? ` (retry ${retryCount})` : ''}`);
     const request = client.request(url, options, (apiRes) => {
         apiRes.on('error', (err) => {
+            cleanupClientClose();
             electron_log_1.default.error(`[Proxy] Upstream stream error for ${model.name}:`, err.message);
-            if (!res.headersSent) {
-                res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: { message: 'Upstream connection error: ' + err.message } }));
+            if (safeWriteHead(res, 500, { 'Content-Type': 'application/json' })) {
+                safeEnd(res, JSON.stringify({ error: { message: 'Upstream connection error: ' + err.message } }));
             }
             else {
-                res.end();
+                safeEnd(res);
             }
         });
         if (isStream) {
@@ -493,6 +576,7 @@ function handleCustomModelRequest(res, model, geminiBody, isStream, retryCount =
                 let errorBody = '';
                 apiRes.on('data', (chunk) => errorBody += chunk.toString());
                 apiRes.on('end', () => {
+                    cleanupClientClose();
                     electron_log_1.default.error(`[Proxy] Stream API error (${apiRes.statusCode}) for ${model.name}: ${errorBody.substring(0, 300)}`);
                     const fallbackModelName = model.fallbackModel || (model.externalModelName === 'gemini-3.8-flash' ? 'gemini-3.7-flash' : undefined);
                     if (apiRes.statusCode === 429 && fallbackModelName && fallbackModelName !== model.externalModelName) {
@@ -502,20 +586,25 @@ function handleCustomModelRequest(res, model, geminiBody, isStream, retryCount =
                             externalModelName: fallbackModelName,
                             fallbackModel: undefined,
                         };
-                        handleCustomModelRequest(res, fallbackModel, geminiBody, isStream, 0);
+                        if (!res.writableEnded && !res.destroyed && !res.headersSent) {
+                            handleCustomModelRequest(res, fallbackModel, geminiBody, isStream, 0);
+                        }
                         return;
                     }
-                    if (retryCount < MAX_RETRIES) {
+                    if (retryCount < MAX_RETRIES && !res.headersSent && !res.writableEnded && !res.destroyed) {
                         electron_log_1.default.warn(`[Proxy] Stream error, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
-                        setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), 1000 * (retryCount + 1));
+                        setTimeout(() => {
+                            if (!res.writableEnded && !res.destroyed && !res.headersSent) {
+                                handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1);
+                            }
+                        }, 1000 * (retryCount + 1));
                         return;
                     }
-                    if (!res.headersSent && !res.writableEnded) {
-                        res.writeHead(200, {
-                            'Content-Type': 'text/event-stream',
-                            'Cache-Control': 'no-cache',
-                            Connection: 'keep-alive',
-                        });
+                    if (safeWriteHead(res, 200, {
+                        'Content-Type': 'text/event-stream',
+                        'Cache-Control': 'no-cache',
+                        Connection: 'keep-alive',
+                    })) {
                         let friendlyMessage = `Provider API Error (${apiRes.statusCode}): `;
                         try {
                             const errObj = JSON.parse(errorBody);
@@ -541,24 +630,34 @@ function handleCustomModelRequest(res, model, geminiBody, isStream, retryCount =
                                 ],
                             },
                         };
-                        res.write(`data: ${JSON.stringify(errorCandidate)}\n\n`);
-                        res.write('data: [DONE]\n\n');
-                        res.end();
+                        safeWrite(res, `data: ${JSON.stringify(errorCandidate)}\n\n`);
+                        safeWrite(res, 'data: [DONE]\n\n');
+                        safeEnd(res);
                     }
-                    else if (!res.writableEnded) {
-                        res.end();
+                    else {
+                        safeEnd(res);
                     }
                 });
                 return;
             }
-            res.writeHead(200, {
+            if (!safeWriteHead(res, 200, {
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
                 Connection: 'keep-alive',
                 'X-Accel-Buffering': 'no',
-            });
+            })) {
+                electron_log_1.default.warn(`[Proxy] Response not writable for ${model.name}; aborting stream.`);
+                cleanupClientClose();
+                apiRes.destroy();
+                return;
+            }
             let buffer = '';
             apiRes.on('data', (chunk) => {
+                if (res.writableEnded || res.destroyed) {
+                    cleanupClientClose();
+                    apiRes.destroy();
+                    return;
+                }
                 buffer += chunk.toString('utf-8');
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
@@ -579,7 +678,7 @@ function handleCustomModelRequest(res, model, geminiBody, isStream, retryCount =
                                     traceId: '',
                                     metadata: {},
                                 };
-                                res.write(`data: ${JSON.stringify(cloudCodeResponse)}\n\n`);
+                                safeWrite(res, `data: ${JSON.stringify(cloudCodeResponse)}\n\n`);
                             }
                         }
                         catch (err) {
@@ -590,6 +689,9 @@ function handleCustomModelRequest(res, model, geminiBody, isStream, retryCount =
                 }
             });
             apiRes.on('end', () => {
+                cleanupClientClose();
+                if (res.writableEnded || res.destroyed)
+                    return;
                 if (buffer.trim().startsWith('data: ')) {
                     const dataStr = buffer.trim().substring(6).trim();
                     if (dataStr !== '[DONE]') {
@@ -602,7 +704,7 @@ function handleCustomModelRequest(res, model, geminiBody, isStream, retryCount =
                                     traceId: '',
                                     metadata: {},
                                 };
-                                res.write(`data: ${JSON.stringify(cloudCodeResponse)}\n\n`);
+                                safeWrite(res, `data: ${JSON.stringify(cloudCodeResponse)}\n\n`);
                             }
                         }
                         catch (e) {
@@ -623,26 +725,33 @@ function handleCustomModelRequest(res, model, geminiBody, isStream, retryCount =
                     traceId: '',
                     metadata: {},
                 };
-                res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
-                res.end();
+                safeWrite(res, `data: ${JSON.stringify(finalChunk)}\n\n`);
+                safeEnd(res);
             });
         }
         else {
             let body = '';
             apiRes.on('data', (chunk) => (body += chunk));
             apiRes.on('end', () => {
+                cleanupClientClose();
+                if (res.writableEnded || res.destroyed)
+                    return;
                 // Retry on 5xx with exponential backoff
-                if (apiRes.statusCode >= 500 && apiRes.statusCode < 600 && retryCount < MAX_RETRIES) {
+                if (apiRes.statusCode >= 500 && apiRes.statusCode < 600 && retryCount < MAX_RETRIES && !res.headersSent) {
                     const retryAfter = parseRetryAfter(apiRes.headers);
                     const delay = retryAfter > 0 ? retryAfter : 1000 * Math.pow(2, retryCount);
                     electron_log_1.default.warn(`[Proxy] Server error ${apiRes.statusCode} for ${model.name}, retrying in ${delay}ms (${retryCount + 1}/${MAX_RETRIES})...`);
-                    setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), delay);
+                    setTimeout(() => {
+                        if (!res.writableEnded && !res.destroyed && !res.headersSent) {
+                            handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1);
+                        }
+                    }, delay);
                     return;
                 }
                 // Retry on 429 with Retry-After header support + exponential backoff or fallback
                 if (apiRes.statusCode === 429) {
                     const fallbackModelName = model.fallbackModel || (model.externalModelName === 'gemini-3.8-flash' ? 'gemini-3.7-flash' : undefined);
-                    if (fallbackModelName && fallbackModelName !== model.externalModelName) {
+                    if (fallbackModelName && fallbackModelName !== model.externalModelName && !res.headersSent) {
                         electron_log_1.default.warn(`[Proxy] Model ${model.externalModelName} received 429 rate limit. Immediately falling back to ${fallbackModelName}...`);
                         const fallbackModel = {
                             ...model,
@@ -652,23 +761,26 @@ function handleCustomModelRequest(res, model, geminiBody, isStream, retryCount =
                         handleCustomModelRequest(res, fallbackModel, geminiBody, isStream, 0);
                         return;
                     }
-                    if (retryCount < MAX_RETRIES) {
+                    if (retryCount < MAX_RETRIES && !res.headersSent) {
                         const retryAfter = parseRetryAfter(apiRes.headers);
                         const delay = retryAfter > 0 ? retryAfter : 2000 * Math.pow(2, retryCount);
                         electron_log_1.default.warn(`[Proxy] Rate limited (429) for ${model.name}, retrying in ${delay}ms (${retryCount + 1}/${MAX_RETRIES})...`);
-                        setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), delay);
+                        setTimeout(() => {
+                            if (!res.writableEnded && !res.destroyed && !res.headersSent) {
+                                handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1);
+                            }
+                        }, delay);
                         return;
                     }
                 }
                 if (apiRes.statusCode >= 400) {
                     // P0-3: Only log status code and model name, NOT response body content
                     electron_log_1.default.error(`[Proxy] API error (${apiRes.statusCode}) for ${model.name}`);
-                    if (!res.headersSent && !res.writableEnded) {
-                        res.writeHead(apiRes.statusCode, { 'Content-Type': 'application/json' });
-                        res.end(body);
+                    if (safeWriteHead(res, apiRes.statusCode, { 'Content-Type': 'application/json' })) {
+                        safeEnd(res, body);
                     }
-                    else if (!res.writableEnded) {
-                        res.end();
+                    else {
+                        safeEnd(res);
                     }
                     return;
                 }
@@ -689,44 +801,87 @@ function handleCustomModelRequest(res, model, geminiBody, isStream, retryCount =
                         traceId: '',
                         metadata: {},
                     };
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify(cloudCodeResponse));
+                    if (safeWriteHead(res, 200, { 'Content-Type': 'application/json' })) {
+                        safeEnd(res, JSON.stringify(cloudCodeResponse));
+                    }
+                    else {
+                        safeEnd(res);
+                    }
                 }
                 catch (e) {
                     electron_log_1.default.error('[Proxy] Failed to map response:', e);
-                    if (retryCount < MAX_RETRIES) {
+                    if (retryCount < MAX_RETRIES && !res.headersSent) {
                         electron_log_1.default.warn(`[Proxy] Parse error for ${model.name}, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
-                        setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), 1000 * (retryCount + 1));
+                        setTimeout(() => {
+                            if (!res.writableEnded && !res.destroyed && !res.headersSent) {
+                                handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1);
+                            }
+                        }, 1000 * (retryCount + 1));
                         return;
                     }
-                    res.writeHead(500, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: { message: 'Failed to translate model response' } }));
+                    if (safeWriteHead(res, 500, { 'Content-Type': 'application/json' })) {
+                        safeEnd(res, JSON.stringify({ error: { message: 'Failed to translate model response' } }));
+                    }
+                    else {
+                        safeEnd(res);
+                    }
                 }
             });
         }
     });
+    const onClientClose = () => {
+        electron_log_1.default.info(`[Proxy] Client closed connection for ${model.name}; aborting upstream request.`);
+        try {
+            request.destroy();
+        }
+        catch (_) { }
+    };
+    res.once('close', onClientClose);
+    const cleanupClientClose = () => {
+        res.removeListener('close', onClientClose);
+    };
     request.setTimeout(REQUEST_TIMEOUT_MS, () => {
+        cleanupClientClose();
         electron_log_1.default.error(`[Proxy] Request timeout (${REQUEST_TIMEOUT_MS}ms) for ${model.name}`);
         request.destroy();
-        if (retryCount < MAX_RETRIES) {
+        if (res.writableEnded || res.destroyed)
+            return;
+        if (retryCount < MAX_RETRIES && !res.headersSent) {
             electron_log_1.default.warn(`[Proxy] Timeout for ${model.name}, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
-            setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), 1000 * (retryCount + 1));
+            setTimeout(() => {
+                if (!res.writableEnded && !res.destroyed && !res.headersSent) {
+                    handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1);
+                }
+            }, 1000 * (retryCount + 1));
             return;
         }
-        if (!res.headersSent) {
-            res.writeHead(504, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: { message: `Request timeout after ${REQUEST_TIMEOUT_MS / 1000}s` } }));
+        if (safeWriteHead(res, 504, { 'Content-Type': 'application/json' })) {
+            safeEnd(res, JSON.stringify({ error: { message: `Request timeout after ${REQUEST_TIMEOUT_MS / 1000}s` } }));
+        }
+        else {
+            safeEnd(res);
         }
     });
     request.on('error', (err) => {
+        cleanupClientClose();
         electron_log_1.default.error('[Proxy] Custom Model Request Error:', err);
-        if (retryCount < MAX_RETRIES) {
+        if (res.writableEnded || res.destroyed)
+            return;
+        if (retryCount < MAX_RETRIES && !res.headersSent) {
             electron_log_1.default.warn(`[Proxy] Network error for ${model.name}, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
-            setTimeout(() => handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1), 1000 * (retryCount + 1));
+            setTimeout(() => {
+                if (!res.writableEnded && !res.destroyed && !res.headersSent) {
+                    handleCustomModelRequest(res, model, geminiBody, isStream, retryCount + 1);
+                }
+            }, 1000 * (retryCount + 1));
             return;
         }
         if (isStream) {
-            if (!res.headersSent) {
+            if (safeWriteHead(res, 200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                Connection: 'keep-alive',
+            })) {
                 const errResponse = {
                     response: {
                         candidates: [
@@ -740,14 +895,20 @@ function handleCustomModelRequest(res, model, geminiBody, isStream, retryCount =
                     traceId: '',
                     metadata: {},
                 };
-                res.write('data: ' + JSON.stringify(errResponse) + '\n\n');
+                safeWrite(res, 'data: ' + JSON.stringify(errResponse) + '\n\n');
+                safeWrite(res, 'data: [DONE]\n\n');
+                safeEnd(res);
             }
-            res.end();
+            else {
+                safeEnd(res);
+            }
         }
         else {
-            if (!res.headersSent) {
-                res.writeHead(502, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: { message: 'Custom model request failed: ' + err.message } }));
+            if (safeWriteHead(res, 502, { 'Content-Type': 'application/json' })) {
+                safeEnd(res, JSON.stringify({ error: { message: 'Custom model request failed: ' + err.message } }));
+            }
+            else {
+                safeEnd(res);
             }
         }
     });
@@ -949,33 +1110,34 @@ function handleGetAvailableModelsProxy(res, reqBody, lsUrl) {
                     electron_log_1.default.error('[Proxy] Failed to inject models into GetAvailableModels:', err);
                 }
             }
-            res.writeHead(lsRes.statusCode || 200, {
+            if (safeWriteHead(res, lsRes.statusCode || 200, {
                 'Content-Type': 'application/grpc-web+proto',
                 'Content-Length': String(modifiedBuf.length),
-            });
-            res.end(modifiedBuf);
+            })) {
+                safeEnd(res, modifiedBuf);
+            }
+            else {
+                safeEnd(res);
+            }
         });
         lsRes.on('error', (err) => {
             electron_log_1.default.error('[Proxy] LS error for GetAvailableModels:', err.message);
-            if (!res.headersSent) {
-                res.writeHead(502);
-                res.end();
+            if (safeWriteHead(res, 502)) {
+                safeEnd(res);
             }
         });
     });
     lsReq.setTimeout(30000, () => {
         electron_log_1.default.error('[Proxy] GetAvailableModels forward timed out');
         lsReq.destroy();
-        if (!res.headersSent) {
-            res.writeHead(504);
-            res.end();
+        if (safeWriteHead(res, 504)) {
+            safeEnd(res);
         }
     });
     lsReq.on('error', (err) => {
         electron_log_1.default.error('[Proxy] GetAvailableModels forward error:', err.message);
-        if (!res.headersSent) {
-            res.writeHead(502);
-            res.end();
+        if (safeWriteHead(res, 502)) {
+            safeEnd(res);
         }
     });
     lsReq.write(reqBody);

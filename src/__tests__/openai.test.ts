@@ -362,4 +362,23 @@ describe('mapOpenAIChunkToGemini', () => {
     const fcParts = result!.content.parts.filter((p) => p.functionCall);
     expect(fcParts.length).toBeGreaterThan(0);
   });
+
+  it('should parse ask_question tool call and normalize parameters', () => {
+    const askDsml =
+      '<DSML|invoke name="ask_question">\n' +
+      '<DSML|parameter name="questions" string="false">\n' +
+      '[{"question": "Pick your target area", "options": ["Wi-Fi", "Web", "Binary"], "is_multi_select": false}]\n' +
+      '</DSML|parameter>\n' +
+      '</DSML|invoke>';
+    const chunk = {
+      id: 'stream_ask',
+      choices: [{ delta: { content: askDsml }, index: 0 }],
+    };
+    const result = mapOpenAIChunkToGemini(chunk, 'dolphin-r1');
+    expect(result).not.toBeNull();
+    expect(result!.finishReason).toBe('TOOL_CALL');
+    const fc = result!.content.parts[0].functionCall;
+    expect(fc?.name).toBe('ask_question');
+    expect((fc?.args as any).questions[0].question).toBe('Pick your target area');
+  });
 });

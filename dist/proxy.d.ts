@@ -3,6 +3,7 @@
  * Routes requests to Google, OpenAI, Anthropic, Ollama, and custom provider endpoints.
  * Intercepts model lists to inject user-defined custom models.
  */
+import * as http from 'http';
 export interface CustomModel {
     name: string;
     displayName: string;
@@ -24,6 +25,9 @@ export interface CustomModel {
     temperature?: number;
     maxOutputTokens?: number;
 }
+export declare function safeWriteHead(res: http.ServerResponse, statusCode: number, headers?: http.OutgoingHttpHeaders | http.OutgoingHttpHeader[]): boolean;
+export declare function safeWrite(res: http.ServerResponse, chunk: any, encoding?: BufferEncoding): boolean;
+export declare function safeEnd(res: http.ServerResponse, data?: any, encoding?: BufferEncoding): void;
 export declare function getGoogleApiKey(): string | null;
 export declare function startProxy(): Promise<number>;
 export declare function stopProxy(): Promise<void>;

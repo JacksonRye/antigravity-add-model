@@ -358,8 +358,20 @@ function parseDSMLToolCalls(text: string): DSMLParsedResult | null {
     let invokeMatch: RegExpExecArray | null;
     while ((invokeMatch = invokeRegex.exec(text)) !== null) {
       const funcName = invokeMatch[1];
-      const paramsBlock = invokeMatch[2];
-      const args: Record<string, unknown> = {};
+      const paramsBlock = invokeMatch[2].trim();
+      let args: Record<string, unknown> = {};
+
+      // Handle direct JSON inside invoke block (e.g. <DSML|invoke name="ask_question">{"question":...}</DSML|invoke>)
+      if (paramsBlock.startsWith('{') && paramsBlock.endsWith('}')) {
+        try {
+          args = JSON.parse(paramsBlock);
+          functionCalls.push({ name: funcName, args });
+          continue;
+        } catch {
+          /* fallback to parameter tags */
+        }
+      }
+
       const paramRegex = /<DSML\|parameter name="([^"]+)"(?: string="([^"]+)")?>([\s\S]*?)<\/DSML\|parameter>/g;
       let paramMatch: RegExpExecArray | null;
       while ((paramMatch = paramRegex.exec(paramsBlock)) !== null) {
@@ -377,13 +389,52 @@ function parseDSMLToolCalls(text: string): DSMLParsedResult | null {
       }
       functionCalls.push({ name: funcName, args });
     }
+
+    // Support <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+    const toolCallXmlRegex = /<(?:tool_call|function_call)>([\s\S]*?)<\/(?:tool_call|function_call)>/g;
+    let tcXmlMatch: RegExpExecArray | null;
+    while ((tcXmlMatch = toolCallXmlRegex.exec(text)) !== null) {
+      try {
+        const parsed = JSON.parse(tcXmlMatch[1].trim());
+        const name = parsed.name || parsed.function || '';
+        const rawArgs = parsed.arguments || parsed.args || parsed.parameters || {};
+        const callArgs = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+        if (name) {
+          functionCalls.push({ name, args: callArgs });
+        }
+      } catch {
+        /* ignore malformed json */
+      }
+    }
+
+    // Support ```tool_call / ```tool_call:name / ```json:tool_call
+    const mdToolCallRegex = /```(?:tool_call(?::([a-zA-Z0-9_-]+))?|json:tool_call|function_call)\s*([\s\S]*?)```/g;
+    let mdMatch: RegExpExecArray | null;
+    while ((mdMatch = mdToolCallRegex.exec(text)) !== null) {
+      try {
+        const explicitName = mdMatch[1];
+        const contentStr = mdMatch[2].trim();
+        const parsed = JSON.parse(contentStr);
+        const name = explicitName || parsed.name || parsed.function || '';
+        const rawArgs = parsed.arguments || parsed.args || parsed.parameters || (explicitName ? parsed : {});
+        const callArgs = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+        if (name) {
+          functionCalls.push({ name, args: callArgs });
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
     if (functionCalls.length === 0) return null;
     log.info(
-      `[Proxy] Detected ${functionCalls.length} DSML tool call(s): ${functionCalls.map((f) => f.name).join(', ')}`,
+      `[Proxy] Detected ${functionCalls.length} tool call(s): ${functionCalls.map((f) => f.name).join(', ')}`,
     );
     let cleanText = text;
     cleanText = cleanText.replace(/<DSML\|tool_calls>[\s\S]*?<\/DSML\|tool_calls>/g, '');
     cleanText = cleanText.replace(/<DSML\|invoke name="[^"]+">[\s\S]*?<\/DSML\|invoke>/g, '');
+    cleanText = cleanText.replace(/<(?:tool_call|function_call)>[\s\S]*?<\/(?:tool_call|function_call)>/g, '');
+    cleanText = cleanText.replace(/```(?:tool_call(?::[a-zA-Z0-9_-]+)?|json:tool_call|function_call)[\s\S]*?```/g, '');
     cleanText = cleanText.trim();
     return { functionCalls, cleanText };
   } catch (e) {

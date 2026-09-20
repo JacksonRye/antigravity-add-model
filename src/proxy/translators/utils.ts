@@ -262,6 +262,24 @@ export function normalizeToolArgs(
 ): Record<string, unknown> {
   if (!args || typeof args !== 'object') return args || {};
 
+  if (name === 'ask_question') {
+    if (args.questions && Array.isArray(args.questions)) {
+      return args;
+    }
+    if (args.question || args.options) {
+      return {
+        questions: [
+          {
+            question: typeof args.question === 'string' ? args.question : 'Please choose an option:',
+            options: Array.isArray(args.options) ? args.options : ['Yes', 'No'],
+            is_multi_select: Boolean(args.is_multi_select || args.isMultiSelect || false),
+          },
+        ],
+      };
+    }
+    return args;
+  }
+
   // Handle array args
   if (Array.isArray(args)) {
     const config = TOOL_PARAM_NORMALIZATION[name];
