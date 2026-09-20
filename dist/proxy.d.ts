@@ -19,6 +19,10 @@ export interface CustomModel {
     fallbackModel?: string;
     thinkingLevel?: string;
     noTools?: boolean;
+    systemPrompt?: string;
+    overrideSystemPrompt?: boolean;
+    temperature?: number;
+    maxOutputTokens?: number;
 }
 export declare function getGoogleApiKey(): string | null;
 export declare function startProxy(): Promise<number>;

@@ -29,6 +29,10 @@ export interface CustomModel {
   fallbackModel?: string;
   thinkingLevel?: string;
   noTools?: boolean;
+  systemPrompt?: string;
+  overrideSystemPrompt?: boolean;
+  temperature?: number;
+  maxOutputTokens?: number;
 }
 
 interface GeminiRequestBody {
@@ -431,6 +435,36 @@ function handleCustomModelRequest(
       }
       geminiBody.systemInstruction.parts.push({ text: planDirective });
     }
+  }
+
+  // Model-level custom system prompt injection
+  if (model.systemPrompt) {
+    if (model.overrideSystemPrompt) {
+      geminiBody.systemInstruction = { parts: [{ text: model.systemPrompt }] };
+    } else {
+      if (!geminiBody.systemInstruction) {
+        geminiBody.systemInstruction = { parts: [{ text: model.systemPrompt }] };
+      } else {
+        if (!Array.isArray(geminiBody.systemInstruction.parts)) {
+          geminiBody.systemInstruction.parts = [];
+        }
+        geminiBody.systemInstruction.parts.unshift({ text: model.systemPrompt });
+      }
+    }
+  }
+
+  // Model-level decoding parameter overrides
+  if (model.temperature !== undefined) {
+    geminiBody.generationConfig = {
+      ...(geminiBody.generationConfig || {}),
+      temperature: model.temperature,
+    };
+  }
+  if (model.maxOutputTokens !== undefined) {
+    geminiBody.generationConfig = {
+      ...(geminiBody.generationConfig || {}),
+      maxOutputTokens: model.maxOutputTokens,
+    };
   }
 
   const payload = registry.translateRequest(provider, geminiBody, model.externalModelName);

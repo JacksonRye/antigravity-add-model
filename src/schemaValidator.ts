@@ -130,6 +130,18 @@ export function validateCustomModel(model: unknown): ValidationResult {
   if (m.allowUnauthorized !== undefined && typeof m.allowUnauthorized !== 'boolean') {
     return { valid: false, error: 'allowUnauthorized must be a boolean' };
   }
+  if (m.systemPrompt !== undefined && typeof m.systemPrompt !== 'string') {
+    return { valid: false, error: 'systemPrompt must be a string' };
+  }
+  if (m.overrideSystemPrompt !== undefined && typeof m.overrideSystemPrompt !== 'boolean') {
+    return { valid: false, error: 'overrideSystemPrompt must be a boolean' };
+  }
+  if (m.temperature !== undefined && typeof m.temperature !== 'number') {
+    return { valid: false, error: 'temperature must be a number' };
+  }
+  if (m.maxOutputTokens !== undefined && typeof m.maxOutputTokens !== 'number') {
+    return { valid: false, error: 'maxOutputTokens must be a number' };
+  }
 
   return { valid: true };
 }
