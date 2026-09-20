@@ -1274,26 +1274,28 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
   // Health check
   if (req.method === 'GET' && (req.url === '/health' || req.url === '/healthz')) {
     const memUsage = process.memoryUsage();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        status: 'ok',
-        uptime: process.uptime(),
-        port: proxyPort,
-        memory: {
-          rssMB: Math.round(memUsage.rss / 1024 / 1024),
-          heapUsedMB: Math.round(memUsage.heapUsed / 1024 / 1024),
-          heapTotalMB: Math.round(memUsage.heapTotal / 1024 / 1024),
-        },
-        state: {
-          activeStreamContexts: activeStreamContexts.size,
-          modelToolCallIds: modelToolCallIds.size,
-          translatedToolCalls: translatedToolCalls.size,
-          modelReasoningContent: modelReasoningContent.size,
-        },
-        timestamp: new Date().toISOString(),
-      }),
-    );
+    if (safeWriteHead(res, 200, { 'Content-Type': 'application/json' })) {
+      safeEnd(
+        res,
+        JSON.stringify({
+          status: 'ok',
+          uptime: process.uptime(),
+          port: proxyPort,
+          memory: {
+            rssMB: Math.round(memUsage.rss / 1024 / 1024),
+            heapUsedMB: Math.round(memUsage.heapUsed / 1024 / 1024),
+            heapTotalMB: Math.round(memUsage.heapTotal / 1024 / 1024),
+          },
+          state: {
+            activeStreamContexts: activeStreamContexts.size,
+            modelToolCallIds: modelToolCallIds.size,
+            translatedToolCalls: translatedToolCalls.size,
+            modelReasoningContent: modelReasoningContent.size,
+          },
+          timestamp: new Date().toISOString(),
+        }),
+      );
+    }
     return;
   }
 
@@ -1310,9 +1312,9 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         bodyRejected = true;
         log.warn(`[Proxy] Request body exceeds ${MAX_BODY_SIZE / 1024 / 1024}MB limit (${req.method} ${req.url})`);
         req.destroy();
-        if (!res.headersSent) {
-          res.writeHead(413, { 'Content-Type': 'application/json' });
-          res.end(
+        if (safeWriteHead(res, 413, { 'Content-Type': 'application/json' })) {
+          safeEnd(
+            res,
             JSON.stringify({ error: { message: `Request body too large. Maximum: ${MAX_BODY_SIZE / 1024 / 1024}MB` } }),
           );
         }
@@ -1342,8 +1344,9 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         handleGetAvailableModelsProxy(res, fullBody, lsUrl);
         return;
       }
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Missing ls parameter' }));
+      if (safeWriteHead(res, 400, { 'Content-Type': 'application/json' })) {
+        safeEnd(res, JSON.stringify({ error: 'Missing ls parameter' }));
+      }
       return;
     }
 
@@ -1385,8 +1388,9 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
                 modelProvider: 'MODEL_PROVIDER_GOOGLE',
               };
             });
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ models: mappedCustom }));
+            if (safeWriteHead(res, 200, { 'Content-Type': 'application/json' })) {
+              safeEnd(res, JSON.stringify({ models: mappedCustom }));
+            }
           }
         });
 
@@ -1541,8 +1545,9 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
               }
             }
 
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(googleJson));
+            if (safeWriteHead(res, 200, { 'Content-Type': 'application/json' })) {
+              safeEnd(res, JSON.stringify(googleJson));
+            }
           } catch (err) {
             log.error('[Proxy] Parsing fetchAvailableModels failed, returning custom models:', err);
             const customModels = loadCustomModels();
@@ -1558,8 +1563,9 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
                 modelProvider: 'MODEL_PROVIDER_GOOGLE',
               };
             });
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ models: mappedCustom }));
+            if (safeWriteHead(res, 200, { 'Content-Type': 'application/json' })) {
+              safeEnd(res, JSON.stringify({ models: mappedCustom }));
+            }
           }
         });
       });
@@ -1579,8 +1585,9 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
             modelProvider: 'MODEL_PROVIDER_GOOGLE',
           };
         });
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ models: mappedCustom }));
+        if (safeWriteHead(res, 200, { 'Content-Type': 'application/json' })) {
+          safeEnd(res, JSON.stringify({ models: mappedCustom }));
+        }
       });
 
       if (fullBody && fullBody.length > 0) {
@@ -1610,10 +1617,10 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
         googleReq.setTimeout(30_000, () => {
           log.error('[Proxy] Models list forward request timed out');
           googleReq.destroy();
-          if (!res.headersSent) {
-            const customModels = loadCustomModels();
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(
+          const customModels = loadCustomModels();
+          if (safeWriteHead(res, 200, { 'Content-Type': 'application/json' })) {
+            safeEnd(
+              res,
               JSON.stringify({
                 models: customModels.map((m) => ({
                   name: m.name,
@@ -1652,8 +1659,9 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
               googleJson.models = mappedCustom;
             }
 
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(googleJson));
+            if (safeWriteHead(res, 200, { 'Content-Type': 'application/json' })) {
+              safeEnd(res, JSON.stringify(googleJson));
+            }
           } catch (err) {
             log.error('[Proxy] Google list models failed, returning custom models list only:', err);
             const customModels = loadCustomModels();
@@ -1666,8 +1674,9 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
               outputTokenLimit: 4096,
               supportedGenerationMethods: ['generateContent', 'countTokens'],
             }));
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ models: mappedCustom }));
+            if (safeWriteHead(res, 200, { 'Content-Type': 'application/json' })) {
+              safeEnd(res, JSON.stringify({ models: mappedCustom }));
+            }
           }
         });
       });
@@ -1675,17 +1684,19 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
       googleReq.on('error', (err) => {
         log.error('[Proxy] Google models list request error:', err);
         const customModels = loadCustomModels();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            models: customModels.map((m) => ({
-              name: m.name,
-              displayName: m.displayName,
-              description: m.description,
-              supportedGenerationMethods: ['generateContent'],
-            })),
-          }),
-        );
+        if (safeWriteHead(res, 200, { 'Content-Type': 'application/json' })) {
+          safeEnd(
+            res,
+            JSON.stringify({
+              models: customModels.map((m) => ({
+                name: m.name,
+                displayName: m.displayName,
+                description: m.description,
+                supportedGenerationMethods: ['generateContent'],
+              })),
+            }),
+          );
+        }
       });
       googleReq.end();
       return;
@@ -1788,8 +1799,9 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): voi
           return;
         } catch (e) {
           log.error('[Proxy] JSON parse error in request body:', e);
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: 'Invalid JSON request body' } }));
+          if (safeWriteHead(res, 400, { 'Content-Type': 'application/json' })) {
+            safeEnd(res, JSON.stringify({ error: { message: 'Invalid JSON request body' } }));
+          }
           return;
         }
       }
