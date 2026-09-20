@@ -282,7 +282,24 @@ You can configure **multiple models from different providers simultaneously**. A
 
 ---
 
-## Installation
+## ⚡ 1-Step Quick Install & Restore (macOS)
+
+If you are setting this up or restoring after an Antigravity app update, you can run the 1-click restore script:
+
+```bash
+~/restore_antigravity.sh
+```
+
+**Or run it manually from this directory:**
+```bash
+npm run build && bash deploy.sh --resources "/Applications/Antigravity.app"
+```
+
+This compiles the latest TypeScript code, injects the custom models proxy and real-time voice interface into `Antigravity.app`, starts the Gemini Live background service if needed, and relaunches the app.
+
+---
+
+## Manual Installation
 
 Requires Node.js **22.12.0 or newer**. Build the tracked TypeScript source before deploying:
 
