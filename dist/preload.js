@@ -1175,6 +1175,13 @@ window.addEventListener('DOMContentLoaded', () => {
         <button id="agy-btn-clear-logs" class="agy-btn-action">Clear</button>
       </div>
       <div class="agy-config-box">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:12px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" id="agy-toggle-wakeword" style="cursor:pointer;" />
+            <span><strong>Hands-Free Wake Word</strong> (Experimental - Off)</span>
+          </label>
+          <span id="agy-wakeword-status" style="font-size:11px;color:#9ca3af;">Disabled</span>
+        </div>
         <div class="agy-mic-meter-box">
           <span>Mic Volume:</span>
           <div class="agy-meter-outer"><div id="agy-mic-meter-inner" class="agy-meter-inner"></div></div>
@@ -1193,6 +1200,8 @@ window.addEventListener('DOMContentLoaded', () => {
         const meterInner = drawer.querySelector('#agy-mic-meter-inner');
         const meterVal = drawer.querySelector('#agy-meter-val');
         const serviceUrlInput = drawer.querySelector('#agy-service-url-input');
+        const wakeWordToggle = drawer.querySelector('#agy-toggle-wakeword');
+        const wakeWordStatus = drawer.querySelector('#agy-wakeword-status');
         // Restore cached service URL
         try {
             const savedUrl = localStorage.getItem('agy_voice_service_url');
@@ -1202,7 +1211,7 @@ window.addEventListener('DOMContentLoaded', () => {
         catch (_) { }
         // Internal Logging
         const rawLogs = [];
-        function logMsg(category, text, level = 'info') {
+        function logMsg(category, text, level = 'info', isHtml = false) {
             const d = new Date();
             const ts = d.toTimeString().split(' ')[0] + '.' + String(d.getMilliseconds()).padStart(3, '0');
             const cleanLine = `[${ts}] [${category}] ${text}`;
@@ -1212,7 +1221,8 @@ window.addEventListener('DOMContentLoaded', () => {
             if (logsWindow) {
                 const line = document.createElement('div');
                 line.className = 'agy-log-line';
-                line.innerHTML = `<span class="agy-log-ts">[${ts}]</span> <span class="agy-tag-${level}">[${category}]</span> <span>${escapeHtml(text)}</span>`;
+                const formattedContent = isHtml ? text : escapeHtml(text);
+                line.innerHTML = `<span class="agy-log-ts">[${ts}]</span> <span class="agy-tag-${level}">[${category}]</span> <span>${formattedContent}</span>`;
                 logsWindow.appendChild(line);
                 logsWindow.scrollTop = logsWindow.scrollHeight;
             }
@@ -1520,6 +1530,7 @@ window.addEventListener('DOMContentLoaded', () => {
         let isUserSpeaking = false;
         let lastVocalSpeechTime = 0;
         let speechFramesCount = 0;
+        const preRollBuffer = []; // Stores recent 250ms of audio frames before speech confirmation
         const NATURAL_PAUSE_MS = 1100; // 1.1s natural pause to formulate thoughts
         let activeConvInterval = null;
         let pauseThinkingTimeout = null;
@@ -1533,13 +1544,15 @@ window.addEventListener('DOMContentLoaded', () => {
             }
             return playbackAudioCtx;
         }
+        let audioChunkQueue = [];
+        let isFlushingAudioQueue = false;
+        let playbackChunkTimeout = null;
         function playAudioChunk(arrayBuffer) {
             try {
                 if (pauseThinkingTimeout) {
                     clearTimeout(pauseThinkingTimeout);
                     pauseThinkingTimeout = null;
                 }
-                const ctx = getPlaybackContext();
                 const pcmData = new Int16Array(arrayBuffer);
                 if (pcmData.length === 0)
                     return;
@@ -1547,15 +1560,49 @@ window.addEventListener('DOMContentLoaded', () => {
                 for (let i = 0; i < pcmData.length; i++) {
                     float32Data[i] = pcmData[i] / 32768.0;
                 }
+                audioChunkQueue.push(float32Data);
+                scheduleAudioPlayback();
+            }
+            catch (err) {
+                logMsg('AUDIO', 'Playback error: ' + err.message, 'error');
+            }
+        }
+        function scheduleAudioPlayback() {
+            const ctx = getPlaybackContext();
+            const now = ctx.currentTime;
+            // If scheduledSources is empty, this is a fresh utterance.
+            // Wait for a 150ms buffer (or 3 chunks) before starting to eliminate network arrival jitter.
+            if (scheduledSources.length === 0 && nextStartTime <= now) {
+                let totalSamples = 0;
+                for (const c of audioChunkQueue)
+                    totalSamples += c.length;
+                const bufferedMs = (totalSamples / 24000) * 1000;
+                if (bufferedMs < 120 && audioChunkQueue.length < 3) {
+                    if (!playbackChunkTimeout) {
+                        playbackChunkTimeout = setTimeout(() => {
+                            playbackChunkTimeout = null;
+                            scheduleAudioPlayback();
+                        }, 40);
+                    }
+                    return;
+                }
+            }
+            if (playbackChunkTimeout) {
+                clearTimeout(playbackChunkTimeout);
+                playbackChunkTimeout = null;
+            }
+            // Schedule all queued chunks seamlessly back-to-back
+            while (audioChunkQueue.length > 0) {
+                const float32Data = audioChunkQueue.shift();
                 const buffer = ctx.createBuffer(1, float32Data.length, 24000);
                 buffer.getChannelData(0).set(float32Data);
                 const source = ctx.createBufferSource();
                 source.buffer = buffer;
                 source.connect(ctx.destination);
-                const now = ctx.currentTime;
-                // Jitter buffer: add 40ms initial lead time on new utterances to avoid micro-gaps/cracking
-                if (nextStartTime < now) {
-                    nextStartTime = now + 0.04;
+                const currentTime = ctx.currentTime;
+                if (nextStartTime < currentTime) {
+                    // If playback fell behind, start slightly in the future (100ms safety window)
+                    nextStartTime = currentTime + 0.10;
                 }
                 source.start(nextStartTime);
                 nextStartTime += buffer.duration;
@@ -1564,7 +1611,7 @@ window.addEventListener('DOMContentLoaded', () => {
                     const idx = scheduledSources.indexOf(source);
                     if (idx > -1)
                         scheduledSources.splice(idx, 1);
-                    if (scheduledSources.length === 0) {
+                    if (scheduledSources.length === 0 && audioChunkQueue.length === 0) {
                         lastPlaybackEndTime = Date.now();
                         if (voiceState === 'speaking' && !isUserSpeaking) {
                             updateUiState('listening', '🎙️ Listening... (Speak naturally anytime)');
@@ -1572,15 +1619,17 @@ window.addEventListener('DOMContentLoaded', () => {
                         }
                     }
                 };
-                if (voiceState !== 'speaking' && !isUserSpeaking) {
-                    updateUiState('speaking', '🔊 Gemini speaking... (Speak to interrupt or Esc)');
-                }
             }
-            catch (err) {
-                logMsg('AUDIO', 'Playback error: ' + err.message, 'error');
+            if (voiceState !== 'speaking' && !isUserSpeaking) {
+                updateUiState('speaking', '🔊 Gemini speaking... (Speak to interrupt or Esc)');
             }
         }
         function stopAudioPlayback() {
+            if (playbackChunkTimeout) {
+                clearTimeout(playbackChunkTimeout);
+                playbackChunkTimeout = null;
+            }
+            audioChunkQueue = [];
             for (const s of scheduledSources) {
                 try {
                     s.stop();
@@ -1718,6 +1767,46 @@ window.addEventListener('DOMContentLoaded', () => {
                                 else if ((msg.type === 'model' || msg.type === 'gemini') && msg.text) {
                                     renderTranscriptLine('Gemini', msg.text);
                                 }
+                                else if (msg.type === 'tool_call') {
+                                    if (msg.name === 'search_web') {
+                                        const query = msg.args?.query || '';
+                                        const results = msg.result?.results || [];
+                                        let cardHtml = `<strong>🔍 Web Search:</strong> <em>"${escapeHtml(query)}"</em><br/>`;
+                                        if (results.length > 0) {
+                                            cardHtml += `<div style="margin-top:4px;padding-left:8px;border-left:2px solid #38bdf8;">`;
+                                            results.forEach((r, idx) => {
+                                                const title = escapeHtml(r.title || 'Source');
+                                                const url = escapeHtml(r.url || '#');
+                                                const snippet = escapeHtml((r.snippet || '').slice(0, 140));
+                                                cardHtml += `<div style="margin-bottom:4px;">${idx + 1}. <a href="${url}" target="_blank" style="color:#38bdf8;text-decoration:underline;">${title}</a><br/><span style="color:#94a3b8;font-size:10px;">${snippet}...</span></div>`;
+                                            });
+                                            cardHtml += `</div>`;
+                                        }
+                                        else {
+                                            cardHtml += `<span style="color:#94a3b8;">No results found.</span>`;
+                                        }
+                                        logMsg('RESEARCH', cardHtml, 'model', true);
+                                    }
+                                    else if (msg.name === 'read_url_content') {
+                                        const title = escapeHtml(msg.result?.title || msg.args?.url || 'Web Page');
+                                        const url = escapeHtml(msg.args?.url || '#');
+                                        const snippet = escapeHtml((msg.result?.content || '').slice(0, 200));
+                                        const cardHtml = `<strong>📄 Read Page:</strong> <a href="${url}" target="_blank" style="color:#38bdf8;text-decoration:underline;">${title}</a><br/><span style="color:#94a3b8;font-size:10px;">${snippet}...</span>`;
+                                        logMsg('RESEARCH', cardHtml, 'model', true);
+                                    }
+                                    else {
+                                        logMsg('TOOL', `Called ${msg.name}: ${JSON.stringify(msg.args || {})}`, 'info');
+                                    }
+                                }
+                                else if (msg.type === 'session_reconnecting') {
+                                    logMsg('WS', `Backend refreshing Gemini Live session: ${msg.error || ''}`, 'ws');
+                                    updateUiState('listening', '🔄 Resuming Gemini Live...');
+                                }
+                                else if (msg.type === 'interrupted') {
+                                    logMsg('INTERRUPT', 'Gemini Live detected user speech interrupt.', 'vad');
+                                    stopAudioPlayback();
+                                    updateUiState('listening', '🎙️ Listening to you...');
+                                }
                                 else if (msg.type === 'error') {
                                     logMsg('ERROR', `Server reported error: ${msg.error}`, 'error');
                                     updateUiState('error', msg.error);
@@ -1778,13 +1867,17 @@ window.addEventListener('DOMContentLoaded', () => {
                     };
                     ws.onerror = (err) => {
                         logMsg('WS', 'WebSocket error: ' + (err?.message || 'Check if service is running on port 8000'), 'error');
-                        updateUiState('error', 'Connection failed');
-                        toggleDrawer(true);
                     };
                     ws.onclose = (e) => {
-                        logMsg('WS', `Connection closed (code: ${e.code}, reason: "${e.reason}")`, 'info');
-                        if (voiceState !== 'error') {
-                            stopVoiceSession();
+                        logMsg('WS', `Connection closed (code: ${e.code}, reason: "${e.reason || 'none'}"). Auto-reconnecting...`, 'info');
+                        // Auto-reconnect failsafe if session was actively in progress
+                        if (voiceState !== 'idle' && voiceState !== 'error') {
+                            updateUiState('connecting', '🔄 Reconnecting to Gemini Live...');
+                            setTimeout(() => {
+                                if (voiceState !== 'idle') {
+                                    void startVoiceSession();
+                                }
+                            }, 1500);
                         }
                     };
                 }
@@ -1826,27 +1919,18 @@ window.addEventListener('DOMContentLoaded', () => {
             micProcessor.connect(micAudioCtx.destination);
             micProcessor.onaudioprocess = (e) => {
                 const input = e.inputBuffer.getChannelData(0);
-                // Acoustic Echo Cancellation / Gating:
-                // While Butler audio is physically playing or within 350ms reverb cooldown, mute mic completely
-                // so the speaker output never hits the mic and causes self-interruption!
-                const isButlerAudioPlaying = scheduledSources.length > 0;
-                const inEchoCooldown = Date.now() - lastPlaybackEndTime < 350;
-                if (isButlerAudioPlaying || inEchoCooldown) {
-                    speechFramesCount = 0;
-                    isUserSpeaking = false;
-                    return;
-                }
                 // RMS of vocal bandpass filtered audio
                 let sum = 0;
                 for (let i = 0; i < input.length; i++)
                     sum += input[i] * input[i];
                 const rms = Math.sqrt(sum / input.length);
-                // Dynamically adapt noise floor during ambient sounds / room music
-                if (!isUserSpeaking) {
+                const isButlerAudioPlaying = scheduledSources.length > 0;
+                // Dynamically adapt noise floor during ambient sounds when Butler is NOT speaking
+                if (!isUserSpeaking && !isButlerAudioPlaying) {
                     adaptiveNoiseFloor = adaptiveNoiseFloor * 0.96 + rms * 0.04;
                 }
-                // True vocal speech threshold must rise above the music/room noise floor
-                const speechThreshold = Math.max(0.025, adaptiveNoiseFloor * 2.3);
+                // Responsive speech threshold with lower floor so gentle words trigger immediately
+                const speechThreshold = Math.max(0.018, adaptiveNoiseFloor * 1.8);
                 // Live visual meter
                 if (drawer.style.display === 'flex' && meterInner) {
                     const pct = Math.min(100, Math.round(rms * 400));
@@ -1855,58 +1939,66 @@ window.addEventListener('DOMContentLoaded', () => {
                         meterVal.textContent = pct + '% (Floor: ' + Math.round(adaptiveNoiseFloor * 400) + '%)';
                 }
                 const now = Date.now();
-                // Detect intentional vocal speech
-                if (rms > speechThreshold) {
-                    speechFramesCount++;
-                    if (speechFramesCount >= 2) { // 2 consecutive frames confirms real speech, not clicks
+                // ─── BARGE-IN / INTERRUPTION HANDLING ───
+                // If Gemini is currently speaking and user starts talking louder than background bleed:
+                if (isButlerAudioPlaying) {
+                    const bargeInThreshold = Math.max(0.040, speechThreshold * 1.4);
+                    if (rms > bargeInThreshold) {
+                        logMsg('INTERRUPT', `Barge-in vocal interrupt detected (RMS: ${rms.toFixed(3)})! Stopping playback.`, 'vad');
+                        stopAudioPlayback();
+                        isUserSpeaking = true;
                         lastVocalSpeechTime = now;
-                        // Natural Vocal Barge-In: Only interrupt if Gemini is actively playing audio through speakers!
-                        if (scheduledSources.length > 0) {
-                            logMsg('BARGE-IN', 'Voice barge-in detected! Silencing Gemini playback...', 'vad');
-                            stopAudioPlayback();
-                            updateUiState('listening', '🎙️ Listening to you...');
-                        }
-                        if (!isUserSpeaking) {
-                            isUserSpeaking = true;
-                            logMsg('VAD', `Speech detected (RMS: ${rms.toFixed(3)}, Floor: ${adaptiveNoiseFloor.toFixed(3)})`, 'vad');
-                            updateUiState('listening', '🎙️ Listening to you...');
-                        }
-                    }
-                }
-                else {
-                    speechFramesCount = Math.max(0, speechFramesCount - 1);
-                }
-                // Stream audio chunks while speaking or active turn
-                if (isUserSpeaking) {
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                        const downsampled = downsampleBuffer(input, micAudioCtx.sampleRate, 16000);
-                        const pcm16 = new Int16Array(downsampled.length);
-                        for (let i = 0; i < downsampled.length; i++) {
-                            const s = Math.max(-1, Math.min(1, downsampled[i]));
-                            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-                        }
-                        ws.send(pcm16.buffer);
-                    }
-                    // Natural Pause Detection: When you pause for 1.1s, notify Gemini
-                    if (now - lastVocalSpeechTime > NATURAL_PAUSE_MS) {
-                        isUserSpeaking = false;
-                        logMsg('TURN', `Natural pause (${NATURAL_PAUSE_MS}ms) detected. Gemini answering...`, 'info');
-                        updateUiState('speaking', '⏳ Gemini thinking...');
+                        updateUiState('listening', '🎙️ Listening to you...');
+                        // Notify server of interrupt immediately
                         if (ws && ws.readyState === WebSocket.OPEN) {
-                            const silence = new Int16Array(1600); // 100ms silence frame
-                            ws.send(silence.buffer);
+                            ws.send(JSON.stringify({ type: 'interrupt' }));
                         }
-                        // Watchdog: If Gemini does not send audio or turn_complete within 12s, cleanly reset to listening
-                        if (pauseThinkingTimeout)
-                            clearTimeout(pauseThinkingTimeout);
-                        pauseThinkingTimeout = setTimeout(() => {
-                            if (scheduledSources.length === 0 && voiceState !== 'idle') {
-                                logMsg('TIMEOUT', 'No response needed or Gemini finished turn. Ready for next query.', 'info');
-                                updateUiState('listening', '🎙️ Listening... (Speak naturally)');
-                            }
-                            pauseThinkingTimeout = null;
-                        }, 12000);
                     }
+                    else {
+                        // Speaker bleed protection: don't stream speaker audio back to Gemini
+                        return;
+                    }
+                }
+                // Prepare downsampled PCM16 frame (16kHz standard for Gemini Live)
+                const downsampled = downsampleBuffer(input, micAudioCtx.sampleRate, 16000);
+                const pcm16 = new Int16Array(downsampled.length);
+                for (let i = 0; i < downsampled.length; i++) {
+                    const s = Math.max(-1, Math.min(1, downsampled[i]));
+                    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+                }
+                // Immediate speech detection: single frame is sufficient to mark speech active
+                if (rms > speechThreshold) {
+                    lastVocalSpeechTime = now;
+                    if (!isUserSpeaking) {
+                        isUserSpeaking = true;
+                        logMsg('VAD', `Speech detected (RMS: ${rms.toFixed(3)}, Floor: ${adaptiveNoiseFloor.toFixed(3)})`, 'vad');
+                        updateUiState('listening', '🎙️ Listening to you...');
+                    }
+                }
+                // CONTINUOUS STREAMING: Always stream mic frames over WebSocket when session is open
+                // Gemini Live's native server-side neural VAD handles real-time semantic endpointing!
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(pcm16.buffer);
+                }
+                // Natural pause detection to update UI and send end-of-utterance prompt if user pauses
+                if (isUserSpeaking && (now - lastVocalSpeechTime > NATURAL_PAUSE_MS)) {
+                    isUserSpeaking = false;
+                    logMsg('TURN', `Natural pause (${NATURAL_PAUSE_MS}ms) detected. Gemini answering...`, 'info');
+                    updateUiState('speaking', '⏳ Gemini thinking...');
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        const silence = new Int16Array(1600); // 100ms silence delimiter
+                        ws.send(silence.buffer);
+                    }
+                    // Watchdog: If Gemini does not send audio or turn_complete within 8s, cleanly reset to listening
+                    if (pauseThinkingTimeout)
+                        clearTimeout(pauseThinkingTimeout);
+                    pauseThinkingTimeout = setTimeout(() => {
+                        if (scheduledSources.length === 0 && voiceState !== 'idle') {
+                            logMsg('TIMEOUT', 'Response timeout recovered. Resetting to active listening.', 'warn');
+                            updateUiState('listening', '🎙️ Listening... (Speak naturally)');
+                        }
+                        pauseThinkingTimeout = null;
+                    }, 8000);
                 }
             };
             logMsg('MIC', 'Vocal bandpass (200-3400Hz) & adaptive noise tracker active.', 'success');
@@ -1957,6 +2049,12 @@ window.addEventListener('DOMContentLoaded', () => {
                 meterVal.textContent = '0%';
             updateUiState('idle');
             logMsg('SESSION', 'Live voice session stopped.', 'info');
+            // Resume hands-free wake word listener when returning to idle
+            if (wakeWordEnabled) {
+                setTimeout(() => {
+                    startWakeWordListener();
+                }, 500);
+            }
         }
         function handleVoiceTrigger() {
             if (voiceState === 'idle') {
@@ -1973,6 +2071,151 @@ window.addEventListener('DOMContentLoaded', () => {
             }
         }
         micBtn.addEventListener('click', handleVoiceTrigger);
+        // ─── Hands-Free Wake Word Engine (Disabled / On-hold) ───
+        let wakeWordEnabled = false;
+        try {
+            const savedWakeSetting = localStorage.getItem('agy_wakeword_enabled');
+            if (savedWakeSetting !== null) {
+                wakeWordEnabled = savedWakeSetting === 'true';
+            }
+        }
+        catch (_) { }
+        if (wakeWordToggle) {
+            wakeWordToggle.checked = wakeWordEnabled;
+            if (wakeWordStatus) {
+                wakeWordStatus.textContent = wakeWordEnabled ? 'Active' : 'Disabled';
+                wakeWordStatus.style.color = wakeWordEnabled ? '#34d399' : '#9ca3af';
+            }
+            wakeWordToggle.addEventListener('change', () => {
+                wakeWordEnabled = wakeWordToggle.checked;
+                try {
+                    localStorage.setItem('agy_wakeword_enabled', String(wakeWordEnabled));
+                }
+                catch (_) { }
+                if (wakeWordStatus) {
+                    wakeWordStatus.textContent = wakeWordEnabled ? 'Active' : 'Disabled';
+                    wakeWordStatus.style.color = wakeWordEnabled ? '#34d399' : '#9ca3af';
+                }
+                if (wakeWordEnabled) {
+                    startWakeWordListener();
+                }
+                else {
+                    stopWakeWordListener();
+                }
+                logMsg('WAKE', `Hands-free wake word ${wakeWordEnabled ? 'enabled' : 'disabled'}.`, 'info');
+            });
+        }
+        let wakeRecognition = null;
+        let wakeWordRestartTimer = null;
+        let isWakeWordRunning = false;
+        function isWakePhrase(text) {
+            const clean = text.toLowerCase().trim();
+            // Patterns matching: "hey gemini", "hey antigravity", "ok gemini", "gemini", "antigravity"
+            const wakeRegex = /^(?:hey\s+|ok\s+|hello\s+)?(?:gemini|antigravity)(?:\s*[,:\-]?\s*(.*))?$/i;
+            const match = clean.match(wakeRegex);
+            if (match) {
+                return { matched: true, query: (match[1] || '').trim() };
+            }
+            // Also check if wake phrase appears anywhere near the start of the utterance
+            const subMatch = clean.match(/\b(?:hey|ok|hello)?\s*(?:gemini|antigravity)\b\s*[,:\-]?\s*(.*)/i);
+            if (subMatch) {
+                return { matched: true, query: (subMatch[1] || '').trim() };
+            }
+            return { matched: false, query: '' };
+        }
+        function startWakeWordListener() {
+            if (!wakeWordEnabled || isWakeWordRunning)
+                return;
+            if (voiceState !== 'idle')
+                return; // Do not run wake recognizer while active Live session is running
+            const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRec) {
+                logMsg('WAKE', 'SpeechRecognition API not available in this environment.', 'warn');
+                return;
+            }
+            try {
+                if (wakeRecognition) {
+                    try {
+                        wakeRecognition.abort();
+                    }
+                    catch (_) { }
+                    wakeRecognition = null;
+                }
+                const rec = new SpeechRec();
+                rec.continuous = true;
+                rec.interimResults = true;
+                rec.lang = 'en-US';
+                rec.onstart = () => {
+                    isWakeWordRunning = true;
+                    logMsg('WAKE', 'Hands-free wake listener active (listening for "Hey Gemini" / "Hey Antigravity")...', 'vad');
+                };
+                rec.onresult = (event) => {
+                    for (let i = event.resultIndex; i < event.results.length; i++) {
+                        const transcript = event.results[i][0].transcript;
+                        const isFinal = event.results[i].isFinal;
+                        const { matched, query } = isWakePhrase(transcript);
+                        if (matched) {
+                            logMsg('WAKE', `Wake word triggered: "${transcript}" (Query: "${query || '[none]'}")`, 'success');
+                            stopWakeWordListener();
+                            // Immediately wake up Gemini Live
+                            void startVoiceSession();
+                            // If a follow-up query was spoken in the same breath, send it as initial text to Gemini Live
+                            if (query && query.length > 1) {
+                                setTimeout(() => {
+                                    if (ws && ws.readyState === WebSocket.OPEN) {
+                                        logMsg('WAKE', `Sending initial voice prompt query: "${query}"`, 'info');
+                                        ws.send(JSON.stringify({ text: query }));
+                                    }
+                                }, 350);
+                            }
+                            break;
+                        }
+                    }
+                };
+                rec.onerror = (e) => {
+                    if (e.error !== 'no-speech' && e.error !== 'aborted') {
+                        logMsg('WAKE', `Wake listener notice: ${e.error}`, 'warn');
+                    }
+                };
+                rec.onend = () => {
+                    isWakeWordRunning = false;
+                    // Automatically keep alive if session is still idle and wake word is enabled
+                    if (wakeWordEnabled && voiceState === 'idle') {
+                        if (wakeWordRestartTimer)
+                            clearTimeout(wakeWordRestartTimer);
+                        wakeWordRestartTimer = setTimeout(() => {
+                            startWakeWordListener();
+                        }, 300);
+                    }
+                };
+                wakeRecognition = rec;
+                rec.start();
+            }
+            catch (err) {
+                isWakeWordRunning = false;
+                logMsg('WAKE', `Could not initialize wake listener: ${err.message}`, 'error');
+            }
+        }
+        function stopWakeWordListener() {
+            isWakeWordRunning = false;
+            if (wakeWordRestartTimer) {
+                clearTimeout(wakeWordRestartTimer);
+                wakeWordRestartTimer = null;
+            }
+            if (wakeRecognition) {
+                try {
+                    wakeRecognition.abort();
+                }
+                catch (_) { }
+                wakeRecognition = null;
+            }
+        }
+        // Initialize wake word listener on startup
+        if (wakeWordEnabled) {
+            setTimeout(() => {
+                startWakeWordListener();
+            }, 1000);
+        }
         // Global Keybindings:
         // - Cmd+Shift+V / Ctrl+Shift+V: Hands-Free Voice Toggle
         // - Cmd+Shift+D / Ctrl+Shift+D: Drawer Toggle
